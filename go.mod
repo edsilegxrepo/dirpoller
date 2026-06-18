@@ -8,8 +8,8 @@ require (
 	github.com/klauspost/compress v1.18.6
 	github.com/pkg/sftp v1.13.10
 	github.com/zeebo/xxh3 v1.1.0
-	golang.org/x/crypto v0.50.0
-	golang.org/x/sys v0.43.0
+	golang.org/x/crypto v0.52.0
+	golang.org/x/sys v0.45.0
 )
 
 require github.com/klauspost/cpuid/v2 v2.3.0 // indirect

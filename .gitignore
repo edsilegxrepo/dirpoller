@@ -7,8 +7,10 @@
 *.so
 *.dylib
 /bin/
+/class/
 
 # Linting
+.ruff_cache
 golangci-lint*
 gosec*
 
@@ -21,8 +23,9 @@ Thumbs.db
 *.swp
 *.swo
 
-# Go
+# Languages
 vendor/
+__pycache__/
 
 # Secrets and environment
 .env
@@ -31,18 +34,23 @@ vendor/
 *.crt
 *.pem
 *.p12
+*.jks
 *.gpg
 *.secret
 secrets/
+key/
+keys/
 
 # Transient
 *.out
 *.tmp
 *.test
 *.log
+temp/
 tmp/
 out/
 log/
+logs/
 
 # Data
 *.db
@@ -51,8 +59,19 @@ log/
 *.bk??
 
 # Build files
+.editorconfig
 .windsurf
+.antigravity
+.antigravity-cli
+.gemini
+.claude
+AGENTS.md
 RULES.md
 GEMINI.md
 CLAUDE.md
 JULES.md
+SKILLS.md
+walkthrough.md
+implementation_plan.md
+code_review_report.md
+tasks.md
