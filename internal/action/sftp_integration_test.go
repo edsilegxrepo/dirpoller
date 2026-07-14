@@ -48,7 +48,7 @@ func TestSFTPHandler_RealMockServer(t *testing.T) {
 	tempDir := testutils.GetUniqueTestDir("action", "sftp_integration")
 	localFile := filepath.Join(tempDir, "test.txt")
 	content := []byte("hello sftp")
-	err := os.WriteFile(localFile, content, 0644)
+	err := os.WriteFile(localFile, content, 0o644)
 	if err != nil {
 		t.Fatalf("failed to write local file: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestSFTPHandler_RealMockServer(t *testing.T) {
 			Type:  "RSA PRIVATE KEY",
 			Bytes: x509.MarshalPKCS1PrivateKey(clientKey),
 		})
-		_ = os.WriteFile(clientKeyPath, keyPEM, 0600)
+		_ = os.WriteFile(clientKeyPath, keyPEM, 0o600)
 
 		server := NewMockServer(t, nil)
 		defer server.Close()
@@ -133,7 +133,7 @@ func TestSFTPHandler_RealMockServer(t *testing.T) {
 			Type:  "RSA PRIVATE KEY",
 			Bytes: x509.MarshalPKCS1PrivateKey(clientKey),
 		})
-		_ = os.WriteFile(clientKeyPath, keyPEM, 0600)
+		_ = os.WriteFile(clientKeyPath, keyPEM, 0o600)
 
 		server := NewMockServer(t, nil)
 		defer server.Close()
@@ -199,7 +199,7 @@ func TestSFTPHandler_RealMockServer(t *testing.T) {
 			Type:  "RSA PRIVATE KEY",
 			Bytes: x509.MarshalPKCS1PrivateKey(wrongKey),
 		})
-		err := os.WriteFile(wrongKeyPath, keyPEM, 0600)
+		err := os.WriteFile(wrongKeyPath, keyPEM, 0o600)
 		if err != nil {
 			t.Fatalf("failed to write wrong client key file: %v", err)
 		}
@@ -234,7 +234,7 @@ func TestSFTPHandler_RealMockServer(t *testing.T) {
 			Type:  "RSA PRIVATE KEY",
 			Bytes: x509.MarshalPKCS1PrivateKey(clientKey),
 		})
-		_ = os.WriteFile(clientKeyPath, keyPEM, 0600)
+		_ = os.WriteFile(clientKeyPath, keyPEM, 0o600)
 
 		server := NewMockServer(t, nil)
 		defer server.Close()

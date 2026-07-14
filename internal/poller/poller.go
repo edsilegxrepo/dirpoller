@@ -21,9 +21,49 @@ package poller
 import (
 	"context"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
+
+var (
+	exclusionMu  sync.RWMutex
+	exclusionMap = make(map[string]time.Time)
+)
+
+// ExcludePath adds a file path to the temporary exclusion cache with a TTL.
+func ExcludePath(path string, ttl time.Duration) {
+	exclusionMu.Lock()
+	defer exclusionMu.Unlock()
+	exclusionMap[path] = time.Now().Add(ttl)
+}
+
+// IsExcluded checks if a path is currently in the exclusion cache and not expired.
+func IsExcluded(path string) bool {
+	exclusionMu.RLock()
+	defer exclusionMu.RUnlock()
+	t, ok := exclusionMap[path]
+	if !ok {
+		return false
+	}
+	if time.Now().After(t) {
+		return false
+	}
+	return true
+}
+
+// ClearExpiredExclusions purges all expired paths from the exclusion cache.
+func ClearExpiredExclusions() {
+	exclusionMu.Lock()
+	defer exclusionMu.Unlock()
+	now := time.Now()
+	for k, v := range exclusionMap {
+		if now.After(v) {
+			delete(exclusionMap, k)
+		}
+	}
+}
 
 // Watcher defines the interface for file system event monitoring.
 type Watcher interface {
@@ -107,6 +147,6 @@ type OSUtils interface {
 // Logic:
 // 1. Windows: Uses native Win32 APIs (CreateFile) for robust lock detection.
 // 2. Linux: Uses standard POSIX file operations.
-func NewOSUtils() OSUtils {
-	return newOSUtils()
+func NewOSUtils(limit int) OSUtils {
+	return newOSUtils(limit)
 }

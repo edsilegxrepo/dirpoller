@@ -74,10 +74,10 @@ func TestMainFlags(t *testing.T) {
 		]
 	}`
 	// Create the script file to pass validation
-	if err := os.WriteFile(filepath.Join(tempDir, "script.bat"), []byte("@echo off"), 0755); err != nil {
+	if err := os.WriteFile(filepath.Join(tempDir, "script.bat"), []byte("@echo off"), 0o755); err != nil {
 		t.Fatalf("failed to write dummy script: %v", err)
 	}
-	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
 		t.Fatalf("failed to write dummy config: %v", err)
 	}
 
@@ -207,7 +207,7 @@ func TestMain(t *testing.T) {
 	tempDir := testutils.GetUniqueTestDir("cmd", "main_entry")
 	configPath := filepath.Join(tempDir, "config.json")
 	scriptPath := filepath.Join(tempDir, "test.bat")
-	if err := os.WriteFile(scriptPath, []byte("@echo off"), 0755); err != nil {
+	if err := os.WriteFile(scriptPath, []byte("@echo off"), 0o755); err != nil {
 		t.Fatalf("failed to write dummy script: %v", err)
 	}
 
@@ -242,7 +242,7 @@ func TestMain(t *testing.T) {
 			}
 		]
 	}`
-	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
 		t.Fatalf("failed to write dummy config: %v", err)
 	}
 

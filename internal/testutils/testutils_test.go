@@ -26,7 +26,7 @@ func TestMockFileInfo(t *testing.T) {
 	m := &MockFileInfo{
 		FName:    "test.txt",
 		FSize:    100,
-		FMode:    0644,
+		FMode:    0o644,
 		FModTime: info.ModTime(),
 		FIsDir:   false,
 	}
@@ -37,7 +37,7 @@ func TestMockFileInfo(t *testing.T) {
 	if m.Size() != 100 {
 		t.Errorf("expected 100, got %d", m.Size())
 	}
-	if m.Mode() != 0644 {
+	if m.Mode() != 0o644 {
 		t.Errorf("expected 0644, got %v", m.Mode())
 	}
 	if m.IsDir() {

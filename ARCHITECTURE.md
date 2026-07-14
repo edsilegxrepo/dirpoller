@@ -9,18 +9,22 @@ This document outlines the architectural decisions, design patterns, data flow, 
 -   **Linux Native**: Uses `inotify` via `fsnotify` for real-time events and standard POSIX advisory locking or stability checks for integrity.
 -   **OS Isolation**: Windows-specific implementations (e.g., `ReadDirectoryChangesW`, **Windows EventLog**, and `FILE_SHARE_NONE` locking) are isolated in `*_windows.go` files, while `*_linux.go` files provide the Linux-specific equivalents.
 -   **Worker Pools**: Uses semaphore-controlled worker pools for SFTP transfers to optimize throughput without overwhelming system resources.
--   **High-Performance SFTP Engine**: Implements a strict **Atomic Upload Protocol** (Stage -> Transfer -> Rename -> Stat) with **1MB packet optimization** and **multiplexed SSH sessions** for maximum throughput and reliability on modern servers. **Remote Cleanup and Orphan Management** is enforced (startup for CLI, daily 00:00:00 for services). Decryption of SFTP credentials occurs per-batch to ensure memory hygiene. See [DESIGN.md](DESIGN.md) for details.
+-   **High-Performance SFTP Engine**: Implements a strict **Atomic Upload Protocol** (Stage -> Transfer -> Rename -> Stat) with **1MB packet optimization** and **multiplexed SSH sessions with lazy connection pruning** (automatically closing and discarding idle sessions older than 5 minutes) for maximum throughput and reliability on modern servers. **Remote Cleanup and Orphan Management** is enforced (startup for CLI, daily 00:00:00 for services). Decryption of SFTP credentials occurs per-batch to ensure memory hygiene. See [DESIGN.md](DESIGN.md) for details.
 -   **Stream Processing**: Archiving logic uses `io.Copy` and streaming `zstd` writers to handle large files with minimal memory footprint.
 -   **High-Performance Hashing**: Uses `XXH3-128` for rapid file integrity verification with minimal CPU overhead.
--   **Atomic File Operations**: Leverages OS-native locking (`FILE_SHARE_NONE` on Windows, `flock` on Linux) to ensure data consistency.
+-   **Atomic File Operations & NTFS Safety**: Leverages OS-native locking (`FILE_SHARE_NONE` on Windows, `flock` on Linux) to ensure data consistency, and strictly enforces Windows-compliant closure ordering (always closing open directory/file handles prior to unlinking) to prevent NTFS sharing violations.
+-   **Event Coalescing**: Event-based polling debounces and groups rapid-burst filesystem write notifications (bursts within 50ms) into single, unified micro-batch slices, preventing file-access collisions and reducing redundant scans.
+-   **Zero-Allocation Buffer Pooling**: Uses pointer-based byte slice pools (`*[]byte` in `sync.Pool`) for I/O buffers in both `internal/action` (SFTP) and `internal/integrity` (hashing). This prevents Go runtime interface conversions, eliminates heap allocation escapes, and keeps memory pressure flat.
+-   **Transactional Micro-Batching (Chunking)**: The Engine processes files in sequential, isolated micro-batches governed by `MaxBatchSize` (defaulting to 10,000 files). The entire pipeline (Verify -> Upload -> Archive/Delete) is executed chunk-by-chunk. This limits the crash-recovery window to a single chunk, levels out disk I/O spikes, and keeps the active heap memory usage flat (typically <15MB RSS).
 
 ## 2. OS Portability & Native Integration
 
 DirPoller is designed for native execution on both Windows and Linux, utilizing a strict isolation strategy to leverage platform-specific performance and security features while maintaining a shared codebase.
 
-### 2.1 OS Isolation Strategy
+### 2.1 OS Isolation & Repository Hygiene
 - **Build-Time Isolation**: Native builds are enforced via `//go:build` constraints. Platform-specific logic (e.g., Windows SCM vs. Linux systemd) is strictly contained in `*_windows.go` and `*_linux.go` files to prevent dependency bleed.
 - **Interface Abstraction**: Core components interact with the OS through the `OSUtils` and `Logger` interfaces. This allows the `Engine` to remain platform-agnostic while the underlying implementation varies by target environment.
+- **Credential Hygiene**: The codebase strictly forbids hardcoded secrets. All integration test SSH key pairs and SFTPGo server keys are dynamically generated on-the-fly inside temporary, isolated test directories in `%TEMP%` / `$TMPDIR` and are programmatically deleted on exit.
 
 ### 2.2 Functional Parity & Differences
 | Feature | Windows Implementation | Linux Implementation |
@@ -94,10 +98,10 @@ graph TD
 ```
 
 1.  **Bootstrap**: `main.go` loads configuration, resolves secrets (SFTP passwords), and initializes the `Engine`.
-2.  **Detection**: The `Poller` monitors the source directory and emits batches of file paths via a Go channel.
-3.  **Validation**: The `Engine` receives a batch and initiates concurrent `Integrity` checks (locks, size stability, hashing).
-4.  **Execution**: Verified files are handed to the `ActionHandler` (SFTP or Script).
-5.  **Finalization**: Successfully processed files are handled by the `Archiver` (Delete, Move, or Compress).
+2.  **Detection**: The `Poller` monitors the source directory and emits sequential micro-batches (chunks) of file paths (up to `MaxBatchSize`) via a Go channel.
+3.  **Validation**: The `Engine` receives a micro-batch and initiates concurrent `Integrity` checks (locks, size stability, hashing) on this chunk.
+4.  **Execution**: Verified files from the current micro-batch are handed to the `ActionHandler` (SFTP or Script).
+5.  **Finalization**: Successfully processed files in the micro-batch are immediately archived/deleted by the `Archiver` before the next micro-batch begins.
 6.  **Reporting**: Every cycle generates an activity report via the `CustomLogger`.
 
 ### 4.2 Data Sequence Diagram

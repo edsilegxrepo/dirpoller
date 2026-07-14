@@ -20,11 +20,13 @@ package archive
 import (
 	"archive/tar"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"criticalsys.net/dirpoller/internal/config"
@@ -79,9 +81,9 @@ func (a *Archiver) Process(ctx context.Context, files []string) error {
 	stagingDir, stagedFiles, err := a.stageFiles(ctx, files)
 	if err != nil {
 		// Attempt rollback for any already staged files
-		_ = a.rollback(stagedFiles)
+		_ = a.rollback(ctx, stagedFiles)
 		if stagingDir != "" {
-			_ = os.RemoveAll(stagingDir)
+			_ = concurrentRemoveAll(stagingDir)
 		}
 		return fmt.Errorf("failed to stage files for archiving: %w", err)
 	}
@@ -90,7 +92,7 @@ func (a *Archiver) Process(ctx context.Context, files []string) error {
 	var commitErr error
 	switch a.cfg.Action.PostProcess.Action {
 	case config.PostActionDelete:
-		commitErr = os.RemoveAll(stagingDir)
+		commitErr = concurrentRemoveAll(stagingDir)
 	case config.PostActionMoveArchive:
 		commitErr = a.moveToFolder(stagingDir)
 	case config.PostActionMoveCompress:
@@ -101,14 +103,14 @@ func (a *Archiver) Process(ctx context.Context, files []string) error {
 
 	if commitErr != nil {
 		// ROLLBACK: Move files back to source
-		_ = a.rollback(stagedFiles)
-		_ = os.RemoveAll(stagingDir)
+		_ = a.rollback(ctx, stagedFiles)
+		_ = concurrentRemoveAll(stagingDir)
 		return fmt.Errorf("failed to commit archiving transaction: %w", commitErr)
 	}
 
 	// Cleanup staging dir if it wasn't removed by the action
 	if _, err := os.Stat(stagingDir); err == nil {
-		_ = os.RemoveAll(stagingDir)
+		_ = concurrentRemoveAll(stagingDir)
 	}
 
 	return nil
@@ -127,34 +129,116 @@ func (a *Archiver) stageFiles(ctx context.Context, files []string) (string, map[
 	stagingDir := filepath.Join(archivePath, ".staging", batchID)
 
 	// If path cannot be created, throw an error
-	if err := os.MkdirAll(stagingDir, 0750); err != nil {
+	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
 		return "", nil, fmt.Errorf("failed to create staging directory %s: %w", stagingDir, err)
 	}
 
 	staged := make(map[string]string) // stagedPath -> originalPath
-	for _, f := range files {
-		select {
-		case <-ctx.Done():
-			return stagingDir, staged, ctx.Err()
-		default:
-			fClean := filepath.Clean(f)
-			dest := filepath.Clean(filepath.Join(stagingDir, filepath.Base(fClean)))
-			if err := os.Rename(fClean, dest); err != nil {
-				return stagingDir, staged, err
-			}
-			staged[dest] = fClean
-		}
+	var mu sync.Mutex
+
+	// Bounded worker pool to execute renames concurrently
+	numWorkers := 16
+	if len(files) < numWorkers {
+		numWorkers = len(files)
 	}
+
+	jobs := make(chan string, len(files))
+	for _, f := range files {
+		jobs <- f
+	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+	errChan := make(chan error, numWorkers)
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for f := range jobs {
+				select {
+				case <-workerCtx.Done():
+					return
+				default:
+					fClean := filepath.Clean(f)
+					dest := filepath.Clean(filepath.Join(stagingDir, filepath.Base(fClean)))
+					if err := os.Rename(fClean, dest); err != nil {
+						select {
+						case errChan <- err:
+							cancel() // abort other workers on first error
+						default:
+						}
+						return
+					}
+					mu.Lock()
+					staged[dest] = fClean
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	select {
+	case err := <-errChan:
+		return stagingDir, staged, err
+	default:
+	}
+
+	if workerCtx.Err() != nil {
+		return stagingDir, staged, workerCtx.Err()
+	}
+
 	return stagingDir, staged, nil
 }
 
-func (a *Archiver) rollback(staged map[string]string) error {
-	var errs []error
-	for stagedPath, originalPath := range staged {
-		if err := os.Rename(stagedPath, originalPath); err != nil {
-			errs = append(errs, fmt.Errorf("rollback failed for %s -> %s: %v", stagedPath, originalPath, err))
-		}
+func (a *Archiver) rollback(ctx context.Context, staged map[string]string) error {
+	if len(staged) == 0 {
+		return nil
 	}
+
+	// Bounded worker pool to execute rollbacks concurrently
+	numWorkers := 16
+	if len(staged) < numWorkers {
+		numWorkers = len(staged)
+	}
+
+	type renameJob struct {
+		stagedPath   string
+		originalPath string
+	}
+	jobs := make(chan renameJob, len(staged))
+	for k, v := range staged {
+		jobs <- renameJob{stagedPath: k, originalPath: v}
+	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				select {
+				case <-ctx.Done():
+					return // Abort rollback immediately if context is canceled
+				default:
+				}
+				if err := os.Rename(job.stagedPath, job.originalPath); err != nil {
+					mu.Lock()
+					errs = append(errs, fmt.Errorf("rollback failed for %s -> %s: %v", job.stagedPath, job.originalPath, err))
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
 	if len(errs) > 0 {
 		log.Printf("Warning: archiving rollback encountered errors: %v\n", errs)
 		return fmt.Errorf("rollback incomplete")
@@ -167,7 +251,7 @@ func (a *Archiver) moveToFolder(stagingDir string) error {
 	destDir := filepath.Join(a.cfg.Action.PostProcess.ArchivePath, datestamp)
 
 	// Create parent dir if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(destDir), 0750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(destDir), 0o750); err != nil {
 		return err
 	}
 
@@ -179,7 +263,7 @@ func (a *Archiver) compressToArchive(ctx context.Context, stagingDir string, sta
 	archiveName := fmt.Sprintf("batch-%s.zst", datestamp)
 	archivePath := filepath.Clean(filepath.Join(a.cfg.Action.PostProcess.ArchivePath, archiveName))
 
-	if err := os.MkdirAll(a.cfg.Action.PostProcess.ArchivePath, 0750); err != nil {
+	if err := os.MkdirAll(a.cfg.Action.PostProcess.ArchivePath, 0o750); err != nil {
 		return err
 	}
 
@@ -266,4 +350,67 @@ func (a *Archiver) addFileToArchive(tw TarWriter, path string, buf []byte) error
 
 	_, err = io.CopyBuffer(tw, f, buf)
 	return err
+}
+
+// concurrentRemoveAll removes a directory and its contents concurrently
+// using a bounded pool of Go workers.
+func concurrentRemoveAll(dir string) error {
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil
+	}
+
+	// 1. Open the directory to read in chunks
+	f, err := os.Open(filepath.Clean(dir))
+	if err != nil {
+		return os.RemoveAll(dir) // Fallback
+	}
+	defer func() { _ = f.Close() }()
+
+	// 2. Setup job channel and worker group
+	const numWorkers = 16
+	jobs := make(chan string, 1000)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+
+	// 3. Spawn workers to delete files concurrently
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for path := range jobs {
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					mu.Lock()
+					errs = append(errs, err)
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+
+	// 4. Stream file paths to workers in chunks of 1000 (constant low memory)
+	for {
+		entries, readErr := f.ReadDir(1000)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				jobs <- filepath.Join(dir, entry.Name())
+			}
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	close(jobs)
+	_ = f.Close() // Explicitly close the folder handle on Windows to release the lock before deleting it
+	wg.Wait()
+
+	// 5. Delete the parent folder itself
+	if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
+		errs = append(errs, err)
+	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }

@@ -51,7 +51,7 @@ func GetTestDir(name string) string {
 // - Lock detection must correctly identify free files.
 func TestOSUtils(t *testing.T) {
 	testDir := GetTestDir("OSUtils")
-	utils := NewOSUtils()
+	utils := NewOSUtils(0)
 
 	t.Run("GetFilesError", func(t *testing.T) {
 		_, err := utils.GetFiles(filepath.Join(testDir, "non_existent"))
@@ -76,7 +76,7 @@ func TestOSUtils(t *testing.T) {
 
 	t.Run("IsLockedSimulation", func(t *testing.T) {
 		file := filepath.Join(testDir, "locked_sim.txt")
-		_ = os.WriteFile(file, []byte("data"), 0644)
+		_ = os.WriteFile(file, []byte("data"), 0o644)
 
 		locked, err := utils.IsLocked(file)
 		if err != nil {
@@ -90,9 +90,9 @@ func TestOSUtils(t *testing.T) {
 
 func TestOSUtilsGetFilesSubfolder(t *testing.T) {
 	testDir := GetTestDir("GetFilesSubfolder")
-	utils := NewOSUtils()
+	utils := NewOSUtils(0)
 	subDir := filepath.Join(testDir, "sub")
-	_ = os.Mkdir(subDir, 0750)
+	_ = os.Mkdir(subDir, 0o750)
 
 	_, err := utils.GetFiles(testDir)
 	if err == nil {
@@ -121,7 +121,7 @@ func TestBatchPollerSubfolderDetection(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	subDir := filepath.Join(testDir, "sub")
-	_ = os.Mkdir(subDir, 0750)
+	_ = os.Mkdir(subDir, 0o750)
 
 	select {
 	case err := <-errChan:
@@ -163,7 +163,7 @@ func TestEventPollerSubfolderDetectionWatcher(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	subDir := filepath.Join(testDir, "new_sub_event")
-	_ = os.Mkdir(subDir, 0750)
+	_ = os.Mkdir(subDir, 0o750)
 
 	select {
 	case err := <-errChan:
@@ -191,9 +191,9 @@ func TestEventPollerDebounce(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	testFile := filepath.Join(testDir, "debounce.txt")
-	_ = os.WriteFile(testFile, []byte("data1"), 0644)
-	_ = os.WriteFile(testFile, []byte("data2"), 0644)
-	_ = os.WriteFile(testFile, []byte("data3"), 0644)
+	_ = os.WriteFile(testFile, []byte("data1"), 0o644)
+	_ = os.WriteFile(testFile, []byte("data2"), 0o644)
+	_ = os.WriteFile(testFile, []byte("data3"), 0o644)
 
 	select {
 	case files := <-results:
@@ -205,7 +205,7 @@ func TestEventPollerDebounce(t *testing.T) {
 	}
 
 	time.Sleep(600 * time.Millisecond)
-	_ = os.WriteFile(testFile, []byte("data4"), 0644)
+	_ = os.WriteFile(testFile, []byte("data4"), 0o644)
 
 	select {
 	case files := <-results:
@@ -219,7 +219,7 @@ func TestEventPollerDebounce(t *testing.T) {
 
 func TestEventPollerInitialScanSuccess(t *testing.T) {
 	testDir := GetTestDir("EventInitialScan")
-	_ = os.WriteFile(filepath.Join(testDir, "existing.txt"), []byte("data"), 0644)
+	_ = os.WriteFile(filepath.Join(testDir, "existing.txt"), []byte("data"), 0o644)
 
 	cfg := &config.Config{Poll: config.PollConfig{Directory: testDir}}
 	p := NewEventPoller(cfg)
@@ -292,7 +292,7 @@ func TestBatchPollerWatcherCreateFile(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	testFile := filepath.Join(testDir, "batch_file.txt")
-	_ = os.WriteFile(testFile, []byte("data"), 0644)
+	_ = os.WriteFile(testFile, []byte("data"), 0o644)
 
 	select {
 	case files := <-results:
@@ -326,7 +326,7 @@ func TestBatchPollerTimeoutFlush(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	testFile := filepath.Join(testDir, "timeout_file.txt")
-	_ = os.WriteFile(testFile, []byte("data"), 0644)
+	_ = os.WriteFile(testFile, []byte("data"), 0o644)
 
 	select {
 	case files := <-results:
@@ -578,7 +578,7 @@ func TestEventPollerSubfolderDetectionCreate(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	subfolder := filepath.Join(testDir, "new_sub")
-	if err := os.MkdirAll(subfolder, 0750); err != nil {
+	if err := os.MkdirAll(subfolder, 0o750); err != nil {
 		t.Fatalf("failed to create subfolder: %v", err)
 	}
 
@@ -610,7 +610,7 @@ func TestEventPollerWatcherCreateFile(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	testFile := filepath.Join(testDir, "new_file.txt")
-	_ = os.WriteFile(testFile, []byte("data"), 0644)
+	_ = os.WriteFile(testFile, []byte("data"), 0o644)
 
 	select {
 	case files := <-results:
@@ -645,11 +645,11 @@ func TestTriggerPollerWatcherEvents(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	testFile := filepath.Join(testDir, "data.txt")
-	_ = os.WriteFile(testFile, []byte("data"), 0644)
+	_ = os.WriteFile(testFile, []byte("data"), 0o644)
 	time.Sleep(100 * time.Millisecond)
 
 	triggerFile := filepath.Join(testDir, "ready.ok")
-	_ = os.WriteFile(triggerFile, []byte("ok"), 0644)
+	_ = os.WriteFile(triggerFile, []byte("ok"), 0o644)
 
 	select {
 	case files := <-results:
@@ -684,7 +684,7 @@ func TestTriggerPollerTimeoutFlush(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	testFile := filepath.Join(testDir, "stranded.txt")
-	_ = os.WriteFile(testFile, []byte("data"), 0644)
+	_ = os.WriteFile(testFile, []byte("data"), 0o644)
 
 	select {
 	case files := <-results:
@@ -698,8 +698,8 @@ func TestTriggerPollerTimeoutFlush(t *testing.T) {
 
 func TestTriggerPollerInitialScanTrigger(t *testing.T) {
 	testDir := GetTestDir("TriggerInitial")
-	_ = os.WriteFile(filepath.Join(testDir, "data.txt"), []byte("data"), 0644)
-	_ = os.WriteFile(filepath.Join(testDir, "ready.ok"), []byte("ok"), 0644)
+	_ = os.WriteFile(filepath.Join(testDir, "data.txt"), []byte("data"), 0o644)
+	_ = os.WriteFile(filepath.Join(testDir, "ready.ok"), []byte("ok"), 0o644)
 
 	cfg := &config.Config{
 		Poll: config.PollConfig{
@@ -930,12 +930,12 @@ func TestOSUtils_IsLocked_WindowsSpecific(t *testing.T) {
 		t.Skip("Skipping Windows-specific lock tests")
 	}
 
-	utils := NewOSUtils()
+	utils := NewOSUtils(0)
 	testDir := GetTestDir("OSUtilsLockedWin")
 
 	t.Run("SharingViolation", func(t *testing.T) {
 		file := filepath.Join(testDir, "locked_file.txt")
-		_ = os.WriteFile(file, []byte("data"), 0644)
+		_ = os.WriteFile(file, []byte("data"), 0o644)
 
 		// Open file with no sharing to simulate a lock
 		f, err := os.OpenFile(file, os.O_RDWR, 0)
@@ -988,7 +988,7 @@ func TestErrWatcherRuntime_Error(t *testing.T) {
 }
 
 func TestOSUtils_IsLocked_TableDriven(t *testing.T) {
-	utils := NewOSUtils()
+	utils := NewOSUtils(0)
 	testDir := GetTestDir("OSUtilsLockedTable")
 
 	invalidPath := "path\x00withnull"
@@ -1088,11 +1088,12 @@ func TestPoller_ChannelTimeouts(t *testing.T) {
 		mock := &testutils.MockOSUtils{Files: []string{"f1.txt"}}
 		p.utils = mock
 		results := make(chan []string) // Unbuffered, no receiver = timeout
-		err := p.poll(results)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+		err := p.poll(ctx, results)
+		if err == nil {
+			t.Error("expected error due to blocked channel and timeout context, got nil")
 		}
-		// Goroutine should timeout silently
 	})
 
 	t.Run("Batch_FlushTimeout", func(t *testing.T) {

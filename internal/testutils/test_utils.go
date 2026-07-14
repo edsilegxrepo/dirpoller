@@ -33,7 +33,7 @@ func GetTestBaseDir() string {
 	baseDir := filepath.Join(filepath.Clean(temp), "dirpoller_UTESTS")
 
 	// Ensure the base directory exists
-	_ = os.MkdirAll(baseDir, 0750)
+	_ = os.MkdirAll(baseDir, 0o750)
 
 	return baseDir
 }
@@ -41,7 +41,7 @@ func GetTestBaseDir() string {
 // GetPackageTestDir returns a unique directory for a package within the test base directory.
 func GetPackageTestDir(packageName string) string {
 	dir := filepath.Join(GetTestBaseDir(), packageName)
-	_ = os.MkdirAll(dir, 0750)
+	_ = os.MkdirAll(dir, 0o750)
 	return dir
 }
 
@@ -50,7 +50,7 @@ func GetUniqueTestDir(packageName, testName string) string {
 	dir := filepath.Join(GetPackageTestDir(packageName), testName)
 	// Ensure a clean state for the specific test
 	_ = os.RemoveAll(dir)
-	_ = os.MkdirAll(dir, 0750)
+	_ = os.MkdirAll(dir, 0o750)
 	return dir
 }
 

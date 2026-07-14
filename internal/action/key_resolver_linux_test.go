@@ -38,7 +38,7 @@ func TestLinuxKeyResolver_ResolveMasterKey(t *testing.T) {
 	t.Run("ProvidedPath", func(t *testing.T) {
 		tempDir := t.TempDir()
 		keyFile := filepath.Join(tempDir, "test.key")
-		if err := os.WriteFile(keyFile, []byte("testkey"), 0600); err != nil {
+		if err := os.WriteFile(keyFile, []byte("testkey"), 0o600); err != nil {
 			t.Fatalf("failed to create key file: %v", err)
 		}
 

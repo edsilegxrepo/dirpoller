@@ -14,12 +14,13 @@ package poller
 
 import (
 	"context"
-	"criticalsys.net/dirpoller/internal/config"
-	"criticalsys.net/dirpoller/internal/testutils"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"criticalsys.net/dirpoller/internal/config"
+	"criticalsys.net/dirpoller/internal/testutils"
 )
 
 // TestIntervalPoller verifies basic time-based file discovery.
@@ -49,7 +50,7 @@ func TestIntervalPoller(t *testing.T) {
 
 	// Create a test file
 	testFile := filepath.Join(testDir, "test1.txt")
-	_ = os.WriteFile(testFile, []byte("hello"), 0644)
+	_ = os.WriteFile(testFile, []byte("hello"), 0o644)
 
 	go func() {
 		if err := p.Start(ctx, results); err != nil && err != context.DeadlineExceeded && err != context.Canceled {
@@ -96,8 +97,8 @@ func TestBatchPoller(t *testing.T) {
 	// 1. Test threshold trigger
 	file1 := filepath.Join(testDir, "batch1.txt")
 	file2 := filepath.Join(testDir, "batch2.txt")
-	_ = os.WriteFile(file1, []byte("1"), 0644)
-	_ = os.WriteFile(file2, []byte("2"), 0644)
+	_ = os.WriteFile(file1, []byte("1"), 0o644)
+	_ = os.WriteFile(file2, []byte("2"), 0o644)
 
 	go func() {
 		if err := p.Start(ctx, results); err != nil && err != context.DeadlineExceeded && err != context.Canceled {
@@ -116,7 +117,7 @@ func TestBatchPoller(t *testing.T) {
 
 	// 2. Test timeout trigger
 	file3 := filepath.Join(testDir, "batch3.txt")
-	_ = os.WriteFile(file3, []byte("3"), 0644)
+	_ = os.WriteFile(file3, []byte("3"), 0o644)
 
 	select {
 	case files := <-results:
@@ -138,7 +139,7 @@ func TestBatchPoller(t *testing.T) {
 func TestBatchPollerTimeout(t *testing.T) {
 	testDir := testutils.GetUniqueTestDir("poller", "BatchPollerTimeout")
 	testFile := filepath.Join(testDir, "test.txt")
-	_ = os.WriteFile(testFile, []byte("data"), 0644)
+	_ = os.WriteFile(testFile, []byte("data"), 0o644)
 
 	cfg := &config.Config{
 		Poll: config.PollConfig{
@@ -201,7 +202,7 @@ func TestEventPoller(t *testing.T) {
 
 	// Create a file
 	testFile := filepath.Join(testDir, "event1.txt")
-	_ = os.WriteFile(testFile, []byte("event"), 0644)
+	_ = os.WriteFile(testFile, []byte("event"), 0o644)
 
 	select {
 	case files := <-results:
@@ -246,7 +247,7 @@ func TestEventPollerDynamicSubfolder(t *testing.T) {
 
 	// Create a subfolder
 	subDir := filepath.Join(testDir, "dynamic_sub")
-	if err := os.Mkdir(subDir, 0750); err != nil {
+	if err := os.Mkdir(subDir, 0o750); err != nil {
 		t.Fatalf("failed to create subfolder: %v", err)
 	}
 
@@ -265,7 +266,7 @@ func TestPollerSubfolderDetection(t *testing.T) {
 
 	// Create subfolder
 	subDir := filepath.Join(testDir, "sub")
-	if err := os.Mkdir(subDir, 0750); err != nil {
+	if err := os.Mkdir(subDir, 0o750); err != nil {
 		t.Fatalf("failed to create subfolder: %v", err)
 	}
 
@@ -278,7 +279,7 @@ func TestPollerSubfolderDetection(t *testing.T) {
 
 	// Test IntervalPoller
 	p := NewIntervalPoller(cfg)
-	if err := p.poll(make(chan []string, 1)); err == nil {
+	if err := p.poll(context.Background(), make(chan []string, 1)); err == nil {
 		t.Error("expected error for subfolder in IntervalPoller, got nil")
 	}
 
@@ -286,5 +287,53 @@ func TestPollerSubfolderDetection(t *testing.T) {
 	ep := NewEventPoller(cfg)
 	if err := ep.Start(context.Background(), make(chan []string, 1)); err == nil {
 		t.Error("expected error for subfolder in EventPoller Start, got nil")
+	}
+}
+
+// TestEventPollerCoalescing verifies that multiple file creation/write events
+// arriving in quick succession are coalesced into a single batch.
+func TestEventPollerCoalescing(t *testing.T) {
+	testDir := testutils.GetUniqueTestDir("poller", "EventPollerCoalesce")
+
+	cfg := &config.Config{
+		Poll: config.PollConfig{
+			Directory:    testDir,
+			MaxBatchSize: 10,
+		},
+	}
+
+	p := NewEventPoller(cfg)
+	results := make(chan []string, 10)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go func() {
+		if err := p.Start(ctx, results); err != nil && err != context.DeadlineExceeded && err != context.Canceled {
+			t.Errorf("Poller failed: %v", err)
+		}
+	}()
+
+	// Wait for watcher to start
+	time.Sleep(500 * time.Millisecond)
+
+	// Create 3 files in quick succession (under 10ms)
+	file1 := filepath.Join(testDir, "c1.txt")
+	file2 := filepath.Join(testDir, "c2.txt")
+	file3 := filepath.Join(testDir, "c3.txt")
+
+	_ = os.WriteFile(file1, []byte("c1"), 0o644)
+	_ = os.WriteFile(file2, []byte("c2"), 0o644)
+	_ = os.WriteFile(file3, []byte("c3"), 0o644)
+
+	// Since the flush timer is 50ms, we wait for a single batch to arrive
+	select {
+	case files := <-results:
+		// We expect the files to be coalesced into a single slice batch
+		if len(files) < 2 {
+			t.Errorf("expected coalescing of at least 2 files, got: %v", files)
+		}
+		t.Logf("Coalesced batch received: %v", files)
+	case <-ctx.Done():
+		t.Errorf("timeout waiting for coalesced events")
 	}
 }

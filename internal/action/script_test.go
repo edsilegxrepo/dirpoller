@@ -15,12 +15,13 @@ package action
 
 import (
 	"context"
-	"criticalsys.net/dirpoller/internal/config"
-	"criticalsys.net/dirpoller/internal/testutils"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"criticalsys.net/dirpoller/internal/config"
+	"criticalsys.net/dirpoller/internal/testutils"
 )
 
 func getScriptTestDir(name string) string {
@@ -39,7 +40,7 @@ func getScriptTestDir(name string) string {
 func TestScriptAction(t *testing.T) {
 	testDir := getScriptTestDir("ScriptAction")
 	testFile := filepath.Join(testDir, "test.txt")
-	_ = os.WriteFile(testFile, []byte("hello"), 0644)
+	_ = os.WriteFile(testFile, []byte("hello"), 0o644)
 
 	scriptExt := ".bat"
 	scriptContent := "@echo off\necho Processing %1\nexit /b 0"
@@ -49,7 +50,7 @@ func TestScriptAction(t *testing.T) {
 	}
 
 	scriptPath := filepath.Join(testDir, "test_script"+scriptExt)
-	_ = os.WriteFile(scriptPath, []byte(scriptContent), 0755)
+	_ = os.WriteFile(scriptPath, []byte(scriptContent), 0o755)
 
 	cfg := &config.Config{
 		Action: config.ActionConfig{
@@ -87,7 +88,7 @@ func TestScriptAction(t *testing.T) {
 func TestScriptActionTimeout(t *testing.T) {
 	testDir := getScriptTestDir("ScriptTimeout")
 	testFile := filepath.Join(testDir, "test.txt")
-	_ = os.WriteFile(testFile, []byte("hello"), 0644)
+	_ = os.WriteFile(testFile, []byte("hello"), 0o644)
 
 	scriptExt := ".bat"
 	scriptContent := "@echo off\npowershell -Command \"Start-Sleep -Seconds 10\"\nexit /b 0"
@@ -97,7 +98,7 @@ func TestScriptActionTimeout(t *testing.T) {
 	}
 
 	scriptPath := filepath.Join(testDir, "timeout_script"+scriptExt)
-	_ = os.WriteFile(scriptPath, []byte(scriptContent), 0755)
+	_ = os.WriteFile(scriptPath, []byte(scriptContent), 0o755)
 
 	cfg := &config.Config{
 		Action: config.ActionConfig{
@@ -122,7 +123,7 @@ func TestScriptActionTimeout(t *testing.T) {
 func TestScriptActionFailure(t *testing.T) {
 	testDir := getScriptTestDir("ScriptFail")
 	testFile := filepath.Join(testDir, "test.txt")
-	_ = os.WriteFile(testFile, []byte("hello"), 0644)
+	_ = os.WriteFile(testFile, []byte("hello"), 0o644)
 
 	scriptExt := ".bat"
 	scriptContent := "@echo off\necho error occurred\nexit /b 1"
@@ -132,7 +133,7 @@ func TestScriptActionFailure(t *testing.T) {
 	}
 
 	scriptPath := filepath.Join(testDir, "fail_script"+scriptExt)
-	_ = os.WriteFile(scriptPath, []byte(scriptContent), 0755)
+	_ = os.WriteFile(scriptPath, []byte(scriptContent), 0o755)
 
 	cfg := &config.Config{
 		Action: config.ActionConfig{
@@ -179,7 +180,7 @@ func TestScriptHandler_Execute_Empty(t *testing.T) {
 func TestScriptHandler_Execute_ContextCancelled(t *testing.T) {
 	testDir := getScriptTestDir("ScriptCancel")
 	testFile := filepath.Join(testDir, "test.txt")
-	_ = os.WriteFile(testFile, []byte("data"), 0644)
+	_ = os.WriteFile(testFile, []byte("data"), 0o644)
 
 	cmdName := "cmd.exe"
 	if runtime.GOOS != "windows" {

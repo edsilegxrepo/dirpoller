@@ -88,6 +88,7 @@ To ensure tests do not interfere with source code or production data, all tests 
 | **Polling** | `TestPollerSubfolderDetection` | Ensure recursive folders are blocked. | Error returned when subfolder is present and blocked. |
 | **Polling** | `TestTriggerPoller` | Verify trigger file pattern and timeout. | Batch processed on trigger OR timeout. |
 | **Polling** | `TestTriggerPollerExactMatch` | Verify exact filename match for trigger. | Only exact filename triggers processing. |
+| **Polling** | `TestEventPollerCoalescing` | Verify fsnotify event micro-batch coalescing. | Rapid burst events (under 50ms) are grouped into a single batch slice. |
 | **Integrity** | `TestIntegrityLockCheck` | Verify file lock detection. | `IsLocked` returns true for held files; free for others. |
 | **Integrity** | `TestIntegrityHash` | Verify XXH3-128 consistency. | File verified after hash property is stable. |
 | **Integrity** | `TestIntegrityChangingFile` | Verify waiting for "quiet" file. | `Verify` returns false while file is still growing/changing. |
@@ -108,6 +109,7 @@ To ensure tests do not interfere with source code or production data, all tests 
 | **Action** | `TestSFTPHandler_RealMockServer/HostKeyVerification_Failure` | Verify connection with mismatched Host Key. | Connection rejected with host key mismatch error. |
 | **Action** | `TestSFTPHandler_Execute_Comprehensive` | Verify SFTP upload logic. | Files uploaded successfully or errors handled. |
 | **Action** | `TestSFTPHandler_Reconnect_Logic` | Verify reconnection on lost sessions. | Handler reconnects and retries successfully. |
+| **Action** | `TestSFTPHandler_LazyConnectionPruning` | Verify pruning of idle SFTP connections. | Sessions idle > 5 minutes are closed and removed from references. |
 | **Archive** | `TestArchive_Process_Comprehensive` | Verify transactional archiving logic. | Prepare-Commit-Rollback cycle works as intended. |
 | **Archive** | `TestArchive_FullCycle_AllActions` | Verify all post-action types. | Delete, Move, and Compress actions finish correctly. |
 | **Archive** | `TestArchive_CompressToArchive_Errors` | Verify compression edge cases via mocks. | Errors in tar/zstd creation handled without panic. |
@@ -195,6 +197,37 @@ go test ./... -v -cover
 
 # Detailed coverage breakdown
 go test ./... -coverprofile="$TEMP/total.cov" && go tool cover -func="$TEMP/total.cov"
+```
+
+### 6.4 Running Integration and Scale Tests
+
+To run the high-volume scale and live SFTP integration tests (which are skipped by default to keep the standard test suite fast), you must set the following environment variables:
+
+- **`TEST_SCALE`**: Set to `"true"` to enable the engine scale performance tests.
+- **`SCALE_LIMIT`**: Set to the desired file count limit for the scale test (e.g., `"10000"` or `"1000000"`).
+- **`TEST_LIVE_SFTP_1M`**: Set to `"true"` to enable the 1,000,000 files live SFTPGo integration test.
+
+#### Windows (PowerShell)
+```powershell
+# Run the 10k scale benchmark
+$env:TEST_SCALE="true"
+$env:SCALE_LIMIT="10000"
+go test -v -run=TestEngineScalePerformance ./internal/service
+
+# Run the 1M live SFTP integration test (requires ~3-4 hours on consumer workstations)
+$env:TEST_SCALE="true"
+$env:SCALE_LIMIT="10000"
+$env:TEST_LIVE_SFTP_1M="true"
+go test -v -timeout=4h -run=TestLiveSFTPGo1MIntegration ./internal/service
+```
+
+#### Linux (Bash)
+```bash
+# Run the 10k scale benchmark
+TEST_SCALE="true" SCALE_LIMIT="10000" go test -v -run=TestEngineScalePerformance ./internal/service
+
+# Run the 1M live SFTP integration test
+TEST_SCALE="true" SCALE_LIMIT="10000" TEST_LIVE_SFTP_1M="true" go test -v -timeout=4h -run=TestLiveSFTPGo1MIntegration ./internal/service
 ```
 
 ## 7. Maintenance and Troubleshooting

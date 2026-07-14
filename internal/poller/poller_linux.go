@@ -17,6 +17,7 @@ package poller
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -27,10 +28,12 @@ import (
 //
 // Objective: Maintain cross-platform parity by implementing native Linux logic
 // for directory constraints and file integrity.
-type linuxOSUtils struct{}
+type linuxOSUtils struct {
+	limit int
+}
 
-func newOSUtils() OSUtils {
-	return &linuxOSUtils{}
+func newOSUtils(limit int) OSUtils {
+	return &linuxOSUtils{limit: limit}
 }
 
 // IsLocked checks if a file is locked by another process using flock.
@@ -80,14 +83,25 @@ func (l *linuxOSUtils) IsLocked(path string) (bool, error) {
 }
 
 func (l *linuxOSUtils) HasSubfolders(dir string) (bool, error) {
-	entries, err := os.ReadDir(dir)
+	f, err := os.Open(filepath.Clean(dir))
 	if err != nil {
 		return false, err
 	}
+	defer func() { _ = f.Close() }()
 
-	for _, entry := range entries {
-		if entry.IsDir() {
-			return true, &ErrSubfolderDetected{Path: entry.Name()}
+	for {
+		entries, err := f.ReadDir(1000)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return false, err
+		}
+
+		for _, entry := range entries {
+			if entry.IsDir() {
+				return true, &ErrSubfolderDetected{Path: entry.Name()}
+			}
 		}
 	}
 
@@ -95,17 +109,35 @@ func (l *linuxOSUtils) HasSubfolders(dir string) (bool, error) {
 }
 
 func (l *linuxOSUtils) GetFiles(dir string) ([]string, error) {
-	var files []string
-	entries, err := os.ReadDir(dir)
+	f, err := os.Open(filepath.Clean(dir))
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = f.Close() }()
 
-	for _, entry := range entries {
-		if entry.IsDir() {
-			return nil, &ErrSubfolderDetected{Path: entry.Name()}
+	var files []string
+	for {
+		entries, err := f.ReadDir(1000)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
 		}
-		files = append(files, filepath.Join(dir, entry.Name()))
+
+		for _, entry := range entries {
+			if entry.IsDir() {
+				return nil, &ErrSubfolderDetected{Path: entry.Name()}
+			}
+			fullPath := filepath.Join(dir, entry.Name())
+			if IsExcluded(fullPath) {
+				continue
+			}
+			files = append(files, fullPath)
+			if l.limit > 0 && len(files) >= l.limit {
+				return files, nil
+			}
+		}
 	}
 
 	return files, nil

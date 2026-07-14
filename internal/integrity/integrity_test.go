@@ -47,7 +47,7 @@ func getTestDir(name string) string {
 func TestIntegrityLockCheck(t *testing.T) {
 	testDir := getTestDir("LockCheck")
 	testFile := filepath.Join(testDir, "locked.txt")
-	err := os.WriteFile(testFile, []byte("data"), 0644)
+	err := os.WriteFile(testFile, []byte("data"), 0o644)
 	if err != nil {
 		t.Fatalf("failed to write test file: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestIntegrityLockCheck(t *testing.T) {
 func TestIntegrityHash(t *testing.T) {
 	testDir := getTestDir("HashCheck")
 	testFile := filepath.Join(testDir, "hash.txt")
-	_ = os.WriteFile(testFile, []byte("initial"), 0644)
+	_ = os.WriteFile(testFile, []byte("initial"), 0o644)
 
 	cfg := &config.Config{
 		Integrity: config.IntegrityConfig{
@@ -109,7 +109,7 @@ func TestIntegrityHash(t *testing.T) {
 func TestIntegrityChangingFile(t *testing.T) {
 	testDir := getTestDir("ChangingFile")
 	testFile := filepath.Join(testDir, "changing.txt")
-	_ = os.WriteFile(testFile, []byte("v1"), 0644)
+	_ = os.WriteFile(testFile, []byte("v1"), 0o644)
 
 	cfg := &config.Config{
 		Integrity: config.IntegrityConfig{
@@ -126,7 +126,7 @@ func TestIntegrityChangingFile(t *testing.T) {
 	// Start a goroutine to change the file size during the interval
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		_ = os.WriteFile(testFile, []byte("v1-changed-size"), 0644)
+		_ = os.WriteFile(testFile, []byte("v1-changed-size"), 0o644)
 	}()
 
 	verified, err := v.Verify(ctx, testFile)
@@ -141,7 +141,7 @@ func TestIntegrityChangingFile(t *testing.T) {
 func TestIntegrityTimestamp(t *testing.T) {
 	testDir := getTestDir("TimestampCheck")
 	testFile := filepath.Join(testDir, "timestamp.txt")
-	_ = os.WriteFile(testFile, []byte("timestamp data"), 0644)
+	_ = os.WriteFile(testFile, []byte("timestamp data"), 0o644)
 
 	cfg := &config.Config{
 		Integrity: config.IntegrityConfig{
@@ -178,7 +178,7 @@ func TestVerifierCalculateHash(t *testing.T) {
 	testDir := getTestDir("CalculateHash")
 	testFile := filepath.Join(testDir, "test.txt")
 	content := []byte("hello world")
-	_ = os.WriteFile(testFile, content, 0644)
+	_ = os.WriteFile(testFile, content, 0o644)
 
 	cfg := &config.Config{}
 	v := NewVerifier(cfg)
@@ -206,7 +206,7 @@ func TestVerifierCalculateHashReadError(t *testing.T) {
 func TestVerifierVerifyContextCancelled(t *testing.T) {
 	testDir := getTestDir("VerifyContext")
 	testFile := filepath.Join(testDir, "test.txt")
-	_ = os.WriteFile(testFile, []byte("data"), 0644)
+	_ = os.WriteFile(testFile, []byte("data"), 0o644)
 
 	cfg := &config.Config{
 		Integrity: config.IntegrityConfig{
@@ -248,7 +248,7 @@ func TestVerifierVerifyFirstStatError(t *testing.T) {
 func TestVerifierVerifySecondStatError(t *testing.T) {
 	testDir := getTestDir("VerifySecondStatError")
 	testFile := filepath.Join(testDir, "test.txt")
-	_ = os.WriteFile(testFile, []byte("data"), 0644)
+	_ = os.WriteFile(testFile, []byte("data"), 0o644)
 
 	cfg := &config.Config{
 		Integrity: config.IntegrityConfig{
@@ -274,7 +274,7 @@ func TestVerifierVerifySecondStatError(t *testing.T) {
 func TestVerifierVerifyLockDetected(t *testing.T) {
 	testDir := getTestDir("VerifyLock")
 	testFile := filepath.Join(testDir, "locked.txt")
-	_ = os.WriteFile(testFile, []byte("data"), 0644)
+	_ = os.WriteFile(testFile, []byte("data"), 0o644)
 
 	cfg := &config.Config{
 		Integrity: config.IntegrityConfig{
@@ -299,7 +299,7 @@ func TestVerifierVerifyLockDetected(t *testing.T) {
 func TestVerifierVerifyLockError(t *testing.T) {
 	testDir := getTestDir("VerifyLockError")
 	testFile := filepath.Join(testDir, "error.txt")
-	_ = os.WriteFile(testFile, []byte("data"), 0644)
+	_ = os.WriteFile(testFile, []byte("data"), 0o644)
 
 	cfg := &config.Config{
 		Integrity: config.IntegrityConfig{

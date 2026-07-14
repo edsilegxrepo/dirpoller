@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,9 @@ var (
 	// [Refinement]: removed runtime.GOOS direct assignment here to rely on platform files where possible.
 	// However, engine.go is shared and needs a default for non-service mode or testing.
 	goos = ""
+
+	// osStat allows mocking file metadata queries during tests to avoid filesystem latency.
+	osStat = os.Stat
 )
 
 // FileVerifier defines the interface for ensuring files are fully committed.
@@ -107,6 +111,14 @@ func NewEngine(cfg *config.Config, isService bool) (*Engine, error) {
 		cfg:            cfg,
 		isService:      isService,
 		platLoggerFunc: NewPlatformLogger,
+	}
+
+	// Apply Go runtime GC/Memory limit tuning if configured
+	if cfg.GCPercent != 0 {
+		debug.SetGCPercent(cfg.GCPercent)
+	}
+	if cfg.MemoryLimitMB > 0 {
+		debug.SetMemoryLimit(int64(cfg.MemoryLimitMB) * 1024 * 1024)
 	}
 
 	// 0. Handle Secret Decryption (SFTP Password)
@@ -232,7 +244,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	}()
 
 	// Scheduled Tasks (Daily at 00:00:00)
-	var lastCleanupDay = -1
+	lastCleanupDay := -1
 	if e.isService {
 		lastCleanupDay = time.Now().YearDay()
 	}
@@ -361,32 +373,52 @@ func (e *Engine) processFiles(ctx context.Context, files []string) {
 	var mu sync.Mutex
 
 	// STEP 1: CONCURRENT INTEGRITY VERIFICATION
-	// Each file is checked across N attempts to ensure it's not being modified.
-	// This uses a fan-out pattern to verify multiple files in parallel.
-	for _, f := range files {
-		wg.Add(1)
-		go func(path string) {
-			defer wg.Done()
+	// Limit concurrency to MaxVerificationWorkers using a worker pool
+	workersLimit := 1
+	if e.cfg != nil {
+		workersLimit = e.cfg.Poll.MaxVerificationWorkers
+	}
+	if workersLimit <= 0 {
+		workersLimit = 1
+	}
+	if len(files) < workersLimit {
+		workersLimit = len(files)
+	}
 
-			// Verifier checks for both Windows file locks and property stability (hash/size/timestamp)
-			ok, err := e.verifier.Verify(ctx, path)
-			if err != nil {
-				// Individual file errors go to the Activity Log, not the System Event Log
-				// We use a mutex to safely collect results from multiple goroutines.
-				mu.Lock()
-				summary.Errors = append(summary.Errors, FileProcessInfo{
-					Path:  path,
-					Error: err.Error(),
-				})
-				mu.Unlock()
-				return
+	jobs := make(chan string, len(files))
+	for _, f := range files {
+		jobs <- f
+	}
+	close(jobs)
+
+	for w := 0; w < workersLimit; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for path := range jobs {
+				// Verifier checks for both Windows file locks and property stability (hash/size/timestamp)
+				ok, err := e.verifier.Verify(ctx, path)
+				if err != nil {
+					poller.ExcludePath(path, 30*time.Second)
+					// Individual file errors go to the Activity Log, not the System Event Log
+					// We use a mutex to safely collect results from multiple goroutines.
+					mu.Lock()
+					summary.Errors = append(summary.Errors, FileProcessInfo{
+						Path:  path,
+						Error: err.Error(),
+					})
+					mu.Unlock()
+					continue
+				}
+				if ok {
+					mu.Lock()
+					verifiedFiles = append(verifiedFiles, path)
+					mu.Unlock()
+				} else {
+					poller.ExcludePath(path, 30*time.Second)
+				}
 			}
-			if ok {
-				mu.Lock()
-				verifiedFiles = append(verifiedFiles, path)
-				mu.Unlock()
-			}
-		}(f)
+		}()
 	}
 
 	wg.Wait()
@@ -401,18 +433,20 @@ func (e *Engine) processFiles(ctx context.Context, files []string) {
 			e.logError(fmt.Sprintf("[Engine:Action] Action execution failed: %v", err))
 		}
 
-		// Update activity summary with results from the handler
-		successMap := make(map[string]bool)
-		for _, f := range processedFiles {
-			successMap[f] = true
-			info := e.getFileInfo(f, "")
-			summary.Processed = append(summary.Processed, info)
-		}
+		// Update activity summary with results from the handler (only if custom log is configured)
+		if e.customLog != nil {
+			successMap := make(map[string]bool)
+			for _, f := range processedFiles {
+				successMap[f] = true
+				info := e.getFileInfo(f, "")
+				summary.Processed = append(summary.Processed, info)
+			}
 
-		for _, f := range verifiedFiles {
-			if !successMap[f] {
-				info := e.getFileInfo(f, "action execution failed")
-				summary.Errors = append(summary.Errors, info)
+			for _, f := range verifiedFiles {
+				if !successMap[f] {
+					info := e.getFileInfo(f, "action execution failed")
+					summary.Errors = append(summary.Errors, info)
+				}
 			}
 		}
 
@@ -432,6 +466,12 @@ func (e *Engine) processFiles(ctx context.Context, files []string) {
 			e.logError(fmt.Sprintf("[Engine:Logging] Failed to write activity log: %v", err))
 		}
 	}
+
+	// Clear the verifier cache at the end of the cycle to prevent memory leaks
+	if v, ok := e.verifier.(*integrity.Verifier); ok {
+		v.ClearCache()
+	}
+	poller.ClearExpiredExclusions()
 }
 
 func (e *Engine) getFileInfo(path string, errMsg string) FileProcessInfo {
@@ -440,20 +480,39 @@ func (e *Engine) getFileInfo(path string, errMsg string) FileProcessInfo {
 		Error: errMsg,
 	}
 	// Use absolute path for consistency if possible, otherwise keep original
-	absPath, err := filepath.Abs(path)
-	if err == nil {
-		info.Path = absPath
+	if filepath.IsAbs(path) {
+		info.Path = path
+	} else {
+		absPath, err := filepath.Abs(path)
+		if err == nil {
+			info.Path = absPath
+		}
 	}
 
-	stat, err := os.Stat(path)
-	if err == nil {
-		info.Size = stat.Size()
+	// 1. Retrieve size from cache to avoid disk reads
+	var size int64
+	var sizeCached bool
+	if v, ok := e.verifier.(*integrity.Verifier); ok {
+		size, sizeCached = v.GetCachedSize(path)
+	}
+	if sizeCached {
+		info.Size = size
+	} else {
+		stat, err := osStat(path)
+		if err == nil {
+			info.Size = stat.Size()
+		}
 	}
 
-	// Calculate hash for logging
-	hash, err := e.verifier.CalculateHash(path)
-	if err == nil {
-		info.Hash = hash
+	// 2. Only compute hash if integrity hashing is enabled to avoid high I/O overhead.
+	// If e.cfg is nil (e.g. manually constructed in tests), we calculate it by default.
+	if e.cfg == nil || e.cfg.Integrity.Algorithm == config.IntegrityHash {
+		hash, err := e.verifier.CalculateHash(path)
+		if err == nil {
+			info.Hash = hash
+		}
+	} else {
+		info.Hash = ""
 	}
 
 	return info

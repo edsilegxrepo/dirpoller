@@ -18,8 +18,9 @@ package action
 
 import (
 	"context"
-	"criticalsys.net/dirpoller/internal/config"
 	"criticalsys/secretprotector/pkg/libsecsecrets"
+
+	"criticalsys.net/dirpoller/internal/config"
 )
 
 type windowsKeyResolver struct{}

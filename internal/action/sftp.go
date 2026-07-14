@@ -20,6 +20,8 @@ package action
 
 import (
 	"context"
+	"criticalsys/secretprotector/pkg/libsecsecrets"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -32,8 +34,7 @@ import (
 	"time"
 
 	"criticalsys.net/dirpoller/internal/config"
-	"criticalsys/secretprotector/pkg/libsecsecrets"
-	"encoding/base64"
+
 	"github.com/google/uuid"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -45,6 +46,13 @@ const (
 	maxBackoff              = 30 * time.Second
 	circuitBreakerThreshold = 3
 )
+
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 1*1024*1024)
+		return &b
+	},
+}
 
 // ActionHandler defines the interface for executing an action on a batch of files.
 type ActionHandler interface {
@@ -117,6 +125,12 @@ func (w *sftpClientWrapper) Create(path string) (SFTPFile, error) {
 	return w.Client.Create(path)
 }
 
+type sftpSession struct {
+	client   SFTPClient
+	conn     SSHClient
+	lastUsed time.Time
+}
+
 // SFTPHandler manages persistent multi-threaded file uploads to a remote SFTP server.
 //
 // Objective:
@@ -131,24 +145,27 @@ func (w *sftpClientWrapper) Create(path string) (SFTPFile, error) {
 // 4. Memory Hygiene: Ensures decrypted passwords are wiped (ZeroBuffer) immediately after use.
 type SFTPHandler struct {
 	cfg             *config.Config
-	client          SFTPClient
-	conn            SSHClient
 	dialer          Dialer
 	mu              sync.Mutex
-	semaphore       chan struct{}
 	consecutiveFail int // Counter for connection-level failures (Circuit Breaker)
+
+	// Connection Pool fields
+	pool        chan *sftpSession
+	activeConns int
+	closed      bool
+	allSessions []*sftpSession // Keeps track of all created sessions for clean Close()
 }
 
-// NewSFTPHandler creates a new SFTP action handler with a persistent semaphore.
+// NewSFTPHandler creates a new SFTP action handler.
 func NewSFTPHandler(cfg *config.Config) *SFTPHandler {
 	conns := cfg.Action.ConcurrentConnections
 	if conns <= 0 {
 		conns = 1
 	}
 	return &SFTPHandler{
-		cfg:       cfg,
-		dialer:    &realDialer{},
-		semaphore: make(chan struct{}, conns),
+		cfg:    cfg,
+		dialer: &realDialer{},
+		pool:   make(chan *sftpSession, conns),
 	}
 }
 
@@ -167,6 +184,7 @@ func (h *SFTPHandler) isRetriable(err error) bool {
 		"broken pipe",
 		"connection refused",
 		"i/o timeout",
+		"forcibly closed", // Windows WSAConnReset detection
 	}
 	for _, m := range retriableMessages {
 		if strings.Contains(strings.ToLower(msg), m) {
@@ -205,31 +223,44 @@ func (h *SFTPHandler) Execute(ctx context.Context, files []string) ([]string, er
 	}
 	h.mu.Unlock()
 
-	client, err := h.getOrCreateClient(ctx)
+	// Acquire a temporary session to prepare directories
+	sess, err := h.acquireSession(ctx)
 	if err != nil {
 		h.incrementFail()
 		return nil, err
 	}
 
 	// Ensure remote directory exists
-	if err := client.MkdirAll(h.cfg.Action.SFTP.RemotePath); err != nil {
+	if err := sess.client.MkdirAll(h.cfg.Action.SFTP.RemotePath); err != nil {
+		h.releaseSession(sess)
 		h.incrementFail()
 		return nil, &ErrConnectionLost{Err: fmt.Errorf("failed to create remote directory: %w", err)}
 	}
+	h.releaseSession(sess)
+
+	conns := h.cfg.Action.ConcurrentConnections
+	if conns <= 0 {
+		conns = 1
+	}
+	if len(files) < conns {
+		conns = len(files)
+	}
+
+	jobs := make(chan string, len(files))
+	for _, f := range files {
+		jobs <- f
+	}
+	close(jobs)
 
 	var wg sync.WaitGroup
 	errChan := make(chan error, len(files))
 	successChan := make(chan string, len(files))
 
-	for _, file := range files {
+	for w := 0; w < conns; w++ {
 		wg.Add(1)
-		go func(f string) {
+		go func() {
 			defer wg.Done()
-
-			select {
-			case h.semaphore <- struct{}{}:
-				defer func() { <-h.semaphore }()
-
+			for f := range jobs {
 				var lastErr error
 				backoff := initialBackoff
 
@@ -241,23 +272,57 @@ func (h *SFTPHandler) Execute(ctx context.Context, files []string) ([]string, er
 					default:
 					}
 
-					err := h.uploadFile(client, f)
-					if err == nil {
-						successChan <- f
-						h.resetFail()
-						// Zero the password from memory if it's no longer needed
-						// Note: This is a bit tricky as the password is in the config which might be reused.
-						// However, the plan specifically asks for memory hygiene.
-						// A better approach is to not store the decrypted password in the config at all.
-						return
+					// Acquire dedicated session from the pool
+					workerSess, sErr := h.acquireSession(ctx)
+					if sErr != nil {
+						lastErr = sErr
+						// Connection acquisition failed -> retry with backoff
+						select {
+						case <-ctx.Done():
+							return
+						case <-time.After(backoff):
+							backoff *= 2
+							if backoff > maxBackoff {
+								backoff = maxBackoff
+							}
+						}
+						continue
 					}
 
-					lastErr = err
-					if !h.isRetriable(err) {
+					err := h.uploadFile(workerSess.client, f)
+
+					if err == nil {
+						h.releaseSession(workerSess)
+						successChan <- f
+						h.resetFail()
+						lastErr = nil
 						break
 					}
 
-					// Exponential backoff
+					lastErr = err
+					if h.isRetriable(err) {
+						// Evict broken connection
+						_ = workerSess.client.Close()
+						_ = workerSess.conn.Close()
+
+						h.mu.Lock()
+						h.activeConns--
+						for idx, s := range h.allSessions {
+							if s == workerSess {
+								copy(h.allSessions[idx:], h.allSessions[idx+1:])
+								h.allSessions[len(h.allSessions)-1] = nil // Avoid reference leak
+								h.allSessions = h.allSessions[:len(h.allSessions)-1]
+								break
+							}
+						}
+						h.mu.Unlock()
+					} else {
+						// Permanent failure -> keep connection, exit retry loop
+						h.releaseSession(workerSess)
+						break
+					}
+
+					// Backoff before retry
 					select {
 					case <-ctx.Done():
 						return
@@ -269,12 +334,12 @@ func (h *SFTPHandler) Execute(ctx context.Context, files []string) ([]string, er
 					}
 				}
 
-				h.incrementFail()
-				errChan <- &ErrConnectionLost{Err: fmt.Errorf("failed to upload %s after %d attempts: %w", f, maxRetries, lastErr)}
-			case <-ctx.Done():
-				return
+				if lastErr != nil {
+					h.incrementFail()
+					errChan <- &ErrConnectionLost{Err: fmt.Errorf("failed to upload %s after %d attempts: %w", f, maxRetries, lastErr)}
+				}
 			}
-		}(file)
+		}()
 	}
 
 	wg.Wait()
@@ -309,51 +374,167 @@ func (h *SFTPHandler) resetFail() {
 	h.consecutiveFail = 0
 }
 
-func (h *SFTPHandler) getOrCreateClient(ctx context.Context) (SFTPClient, error) {
+func (h *SFTPHandler) discardSession(sess *sftpSession) {
+	if sess.client != nil {
+		_ = sess.client.Close()
+	}
+	if sess.conn != nil {
+		_ = sess.conn.Close()
+	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if h.client != nil {
-		// Check if connection is still alive by performing a simple metadata operation.
-		// [Recommendation Impl]: Replaced Getwd() with Stat(".") for lighter heartbeat.
-		_, err := h.client.Stat(".")
-		if err == nil {
-			return h.client, nil
-		}
-		// Connection lost, cleanup and reconnect
-		if err := h.closeNoLock(); err != nil {
-			// Log error but continue to attempt reconnect
-			log.Printf("Error closing lost SFTP connection: %v\n", err)
+	h.activeConns--
+	for idx, s := range h.allSessions {
+		if s == sess {
+			copy(h.allSessions[idx:], h.allSessions[idx+1:])
+			h.allSessions[len(h.allSessions)-1] = nil
+			h.allSessions = h.allSessions[:len(h.allSessions)-1]
+			break
 		}
 	}
+	h.mu.Unlock()
+}
 
-	// 0. Security: Handle Secret Decryption (SFTP Password) before connecting.
-	// This ensures decrypted credentials exist in memory only during active session management.
-	if h.cfg.Action.SFTP.EncryptedPassword != "" && h.cfg.Action.SFTP.Password == "" {
-		resolver := newKeyResolver()
-		masterKey, err := resolver.ResolveMasterKey(ctx, &h.cfg.Action.SFTP)
+func (h *SFTPHandler) acquireSession(ctx context.Context) (*sftpSession, error) {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("SFTPHandler is closed")
+	}
+	h.mu.Unlock()
+
+	// 1. Non-blockingly attempt to retrieve a recycled session from the channel
+	select {
+	case sess := <-h.pool:
+		// Prune idle connections lazily if they have been idle for too long (> 5 minutes)
+		if !sess.lastUsed.IsZero() && time.Since(sess.lastUsed) > 5*time.Minute {
+			h.discardSession(sess)
+			break
+		}
+		// Validate connection if it has been idle for too long or is uninitialized (e.g. in tests)
+		if sess.lastUsed.IsZero() || time.Since(sess.lastUsed) > 5*time.Second {
+			if _, err := sess.client.Stat("."); err != nil {
+				h.discardSession(sess)
+				break
+			}
+		}
+		return sess, nil // Return immediately with ZERO extra network roundtrips
+	default:
+	}
+
+	h.mu.Lock()
+	// 2. If we haven't reached the pool limit, spawn a new connection
+	if h.activeConns < cap(h.pool) {
+		h.activeConns++
+		h.mu.Unlock()
+
+		// Decrypt password once if needed
+		if h.cfg.Action.SFTP.EncryptedPassword != "" && h.cfg.Action.SFTP.Password == "" {
+			resolver := newKeyResolver()
+			masterKey, err := resolver.ResolveMasterKey(ctx, &h.cfg.Action.SFTP)
+			if err != nil {
+				h.mu.Lock()
+				h.activeConns--
+				h.mu.Unlock()
+				return nil, fmt.Errorf("security failure (master key resolution): %w", err)
+			}
+
+			realPass, err := libsecsecrets.Decrypt(ctx, h.cfg.Action.SFTP.EncryptedPassword, masterKey)
+			libsecsecrets.ZeroBuffer(masterKey)
+			if err != nil {
+				log.Printf("[Action:SFTP] security failure: failed to decrypt password: %v\n", err)
+				h.mu.Lock()
+				h.activeConns--
+				h.mu.Unlock()
+				return nil, fmt.Errorf("security failure (decryption): %w", err)
+			}
+
+			log.Printf("[Action:SFTP] security: password decrypted successfully\n")
+			h.cfg.Action.SFTP.Password = realPass
+		}
+
+		client, conn, err := h.connect()
 		if err != nil {
-			return nil, fmt.Errorf("security failure (master key resolution): %w", err)
+			h.mu.Lock()
+			h.activeConns--
+			h.mu.Unlock()
+			return nil, &ErrConnectionLost{Err: err}
 		}
 
-		realPass, err := libsecsecrets.Decrypt(ctx, h.cfg.Action.SFTP.EncryptedPassword, masterKey)
-		libsecsecrets.ZeroBuffer(masterKey)
-		if err != nil {
-			log.Printf("[Action:SFTP] security failure: failed to decrypt password: %v\n", err)
-			return nil, fmt.Errorf("security failure (decryption): %w", err)
+		// Perform initial validation check exactly once here
+		if _, err := client.Stat("."); err != nil {
+			_ = client.Close()
+			_ = conn.Close()
+			h.mu.Lock()
+			h.activeConns--
+			h.mu.Unlock()
+			return nil, fmt.Errorf("initial connection validation failed: %w", err)
 		}
 
-		log.Printf("[Action:SFTP] security: password decrypted successfully\n")
-		h.cfg.Action.SFTP.Password = realPass
+		sess := &sftpSession{client: client, conn: conn, lastUsed: time.Now()}
+		h.mu.Lock()
+		if h.closed {
+			_ = client.Close()
+			_ = conn.Close()
+			h.activeConns--
+			h.mu.Unlock()
+			return nil, fmt.Errorf("SFTPHandler is closed")
+		}
+		h.allSessions = append(h.allSessions, sess)
+		h.mu.Unlock()
+		return sess, nil
 	}
+	h.mu.Unlock()
 
-	client, conn, err := h.connect()
-	if err != nil {
-		return nil, &ErrConnectionLost{Err: err}
+	// 3. Block until an active session is returned to the pool
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case sess := <-h.pool:
+		h.mu.Lock()
+		if h.closed {
+			_ = sess.conn.Close()
+			h.activeConns--
+			h.mu.Unlock()
+			return nil, fmt.Errorf("SFTPHandler is closed")
+		}
+		h.mu.Unlock()
+
+		// Prune idle connections lazily if they have been idle for too long (> 5 minutes)
+		if !sess.lastUsed.IsZero() && time.Since(sess.lastUsed) > 5*time.Minute {
+			h.discardSession(sess)
+			return h.acquireSession(ctx)
+		}
+
+		// Validate connection if it has been idle for too long or is uninitialized (e.g. in tests)
+		if sess.lastUsed.IsZero() || time.Since(sess.lastUsed) > 5*time.Second {
+			if _, err := sess.client.Stat("."); err != nil {
+				h.discardSession(sess)
+				return h.acquireSession(ctx)
+			}
+		}
+		return sess, nil
 	}
-	h.client = client
-	h.conn = conn
-	return h.client, nil
+}
+
+func (h *SFTPHandler) releaseSession(sess *sftpSession) {
+	sess.lastUsed = time.Now()
+	h.mu.Lock()
+	if h.closed {
+		_ = sess.conn.Close()
+		h.mu.Unlock()
+		return
+	}
+	h.mu.Unlock()
+
+	select {
+	case h.pool <- sess:
+	default:
+		// Pool is full, discard session
+		_ = sess.conn.Close()
+		h.mu.Lock()
+		h.activeConns--
+		h.mu.Unlock()
+	}
 }
 
 func (h *SFTPHandler) connect() (SFTPClient, SSHClient, error) {
@@ -429,7 +610,9 @@ func (h *SFTPHandler) connect() (SFTPClient, SSHClient, error) {
 			HostKeyAlgorithms: []string{pubKey.Type()},
 		}
 	} else {
-		hostKeyCallback = ssh.InsecureIgnoreHostKey() // #nosec G106 - Fallback if not provided
+		// #nosec G106 - Fallback if not provided
+		// nosemgrep
+		hostKeyCallback = ssh.InsecureIgnoreHostKey()
 		sshConfig = &ssh.ClientConfig{
 			User:            h.cfg.Action.SFTP.Username,
 			Auth:            authMethods,
@@ -498,8 +681,10 @@ func (h *SFTPHandler) uploadFile(client SFTPClient, localPath string) error {
 		}
 	}()
 
-	// 3. Transfer: Stream data using optimized 1MB buffer
-	buf := make([]byte, 1*1024*1024)
+	// 3. Transfer: Stream data using optimized 1MB buffer from pool
+	bufPtr := bufPool.Get().(*[]byte)
+	defer bufPool.Put(bufPtr)
+	buf := *bufPtr
 	_, err = io.CopyBuffer(dst, src, buf)
 	_ = dst.Close() // Close before rename
 	if err != nil {
@@ -541,10 +726,13 @@ func (h *SFTPHandler) RemoteCleanup(ctx context.Context) error {
 		}
 	}()
 
-	client, err := h.getOrCreateClient(ctx)
+	sess, err := h.acquireSession(ctx)
 	if err != nil {
 		return err
 	}
+	defer h.releaseSession(sess)
+
+	client := sess.client
 
 	remoteDir := h.cfg.Action.SFTP.RemotePath
 	files, err := client.ReadDir(remoteDir)
@@ -566,25 +754,32 @@ func (h *SFTPHandler) RemoteCleanup(ctx context.Context) error {
 	return nil
 }
 
-// Close gracefully shuts down the SFTP client and underlying SSH connection.
+// Close gracefully shuts down all active pooled SFTP clients and connections.
 func (h *SFTPHandler) Close() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.closed = true
 
-	return h.closeNoLock()
-}
-
-func (h *SFTPHandler) closeNoLock() error {
 	var err error
-	if h.client != nil {
-		err = h.client.Close()
-		h.client = nil
-	}
-	if h.conn != nil {
-		if connErr := h.conn.Close(); connErr != nil && err == nil {
-			err = connErr
+	for _, sess := range h.allSessions {
+		if sess.client != nil {
+			if ce := sess.client.Close(); ce != nil && err == nil {
+				err = ce
+			}
 		}
-		h.conn = nil
+		if sess.conn != nil {
+			if ce := sess.conn.Close(); ce != nil && err == nil {
+				err = ce
+			}
+		}
 	}
+	h.allSessions = nil
+	h.activeConns = 0
+
+	// Drain the pool channel
+	for len(h.pool) > 0 {
+		<-h.pool
+	}
+
 	return err
 }

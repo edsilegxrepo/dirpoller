@@ -53,7 +53,7 @@ func TestTriggerPoller(t *testing.T) {
 
 	// 1. Test trigger file
 	file1 := filepath.Join(testDir, "data1.txt")
-	_ = os.WriteFile(file1, []byte("data"), 0644)
+	_ = os.WriteFile(file1, []byte("data"), 0o644)
 
 	go func() {
 		if err := p.Start(ctx, results); err != nil && err != context.DeadlineExceeded && err != context.Canceled {
@@ -64,7 +64,7 @@ func TestTriggerPoller(t *testing.T) {
 	// Create trigger file
 	time.Sleep(500 * time.Millisecond)
 	triggerFile := filepath.Join(testDir, "trigger.txt")
-	_ = os.WriteFile(triggerFile, []byte("go"), 0644)
+	_ = os.WriteFile(triggerFile, []byte("go"), 0o644)
 
 	select {
 	case files := <-results:
@@ -84,7 +84,7 @@ func TestTriggerPoller(t *testing.T) {
 
 	// 2. Test timeout trigger
 	file2 := filepath.Join(testDir, "data2.txt")
-	_ = os.WriteFile(file2, []byte("more data"), 0644)
+	_ = os.WriteFile(file2, []byte("more data"), 0o644)
 
 	select {
 	case files := <-results:

@@ -20,7 +20,7 @@ To ensure maximum native performance across platforms, the application employs a
 The engine supports four mutually exclusive algorithms:
 - **Interval**: Scans the directory every `n` seconds. (Cross-platform)
 - **Batch**: Accumulates files until a count threshold is reached. If the threshold is not reached, files are processed after a fallback timeout. (Cross-platform)
-- **Event**: Real-time monitoring using OS-native APIs (`ReadDirectoryChangesW` on Windows, `inotify` on Linux). Files are processed once they are fully committed. Includes a debounce mechanism (500ms).
+- **Event**: Real-time monitoring using OS-native APIs (`ReadDirectoryChangesW` on Windows, `inotify` on Linux). Files are processed once they are fully committed. Includes a debounce mechanism (500ms) and event coalescing to group rapid-burst file write notifications (bursts within 50ms) into unified micro-batch slices to prevent file-access collisions.
 - **Trigger**: Waits for a specific file pattern (exact name or wildcard like `name_*.ext`) to appear before processing all pending files. (Cross-platform)
 
 **Fallback Timeout**: For **Batch** and **Trigger** modes, a configurable timeout (default 10m) forces processing of any pending files even if the threshold or trigger file hasn't appeared.
@@ -34,7 +34,7 @@ Before any action, files must pass an integrity check (configurable `n` attempts
 - **Lock Check**: 
   - **Windows**: Uses Windows-native `CreateFile` with `FILE_SHARE_NONE` to ensure the file is not being written to by another process.
   - **Linux**: Uses `flock` (LOCK_EX|LOCK_NB) to detect active writes or locks by other processes.
-- **Hash-based**: Uses `XXH3-128` to verify content consistency.
+- **Hash-based**: Uses `XXH3-128` to verify content consistency, utilizing pooled byte buffers (`sync.Pool` with `*[]byte`) to eliminate heap allocation overhead.
 - **Timestamp-based**: Monitors `LastWriteTime` (Windows) or `mtime` (Linux) for changes.
 - **Size-based**: Monitors file size for changes.
 
@@ -162,10 +162,10 @@ The SFTP engine is designed for high-throughput, resilient transfers, specifical
 
 ### 10.1 Concurrency & Performance
 - **Worker Pool**: Uses a semaphore-controlled pool of goroutines to process multiple files in parallel.
-- **Session Multiplexing**: Reuses a single `ssh.Client` to multiplex multiple `sftp.Client` sessions, avoiding expensive SSH handshakes for every file.
+- **Session Multiplexing & Lazy Pruning**: Reuses a single `ssh.Client` to multiplex multiple `sftp.Client` sessions. Sessions are retrieved from a connection pool and validated prior to checkout. Idle connections older than 5 minutes are dynamically closed and pruned from references to prevent resource leaks.
 - **TCP Optimization**: 
   - **Max Packet Size**: Configured with `sftp.MaxPacket(1MB)` to maximize throughput for modern servers.
-  - **Buffer Management**: Uses `io.CopyBuffer` with a matching **1MB buffer** to minimize syscalls and optimize TCP packet sizing.
+  - **Buffer Management**: Uses `io.CopyBuffer` with a matching **1MB buffer** to minimize syscalls and optimize TCP packet sizing. Buffers are pooled using `sync.Pool` with slice pointers (`*[]byte`) to prevent Go interface conversions and eliminate heap allocations.
   - **Legacy Fallback**: Automatically falls back to standard packets if the server does not support large packets.
 
 ### 10.2 Atomic Upload Protocol (Data Integrity)

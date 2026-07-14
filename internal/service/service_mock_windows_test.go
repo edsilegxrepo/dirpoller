@@ -22,10 +22,10 @@ package service
 import (
 	"fmt"
 	"strings"
+	"testing"
 
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
-	"testing"
 )
 
 type mockServiceManager struct {

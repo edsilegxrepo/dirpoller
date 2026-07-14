@@ -39,7 +39,7 @@ type TriggerPoller struct {
 func NewTriggerPoller(cfg *config.Config) *TriggerPoller {
 	return &TriggerPoller{
 		cfg:   cfg,
-		utils: NewOSUtils(),
+		utils: NewOSUtils(cfg.Poll.MaxBatchSize),
 		files: make(map[string]struct{}),
 		newWatcher: func() (Watcher, error) {
 			return newRealWatcher()
@@ -76,22 +76,24 @@ func (p *TriggerPoller) Start(ctx context.Context, results chan<- []string) erro
 		return &ErrWatcherInitialization{Err: err}
 	}
 
-	// Initial scan
-	if _, err := p.utils.HasSubfolders(p.cfg.Poll.Directory); err != nil {
+	// Initial scan (GetFiles also detects subfolders)
+	initialFiles, err := p.utils.GetFiles(p.cfg.Poll.Directory)
+	if err != nil {
 		return err
 	}
-	initialFiles, err := p.utils.GetFiles(p.cfg.Poll.Directory)
-	if err == nil {
-		p.mu.Lock()
-		for _, f := range initialFiles {
-			if p.isTriggerFile(f, pattern) {
-				p.flush(results)
-				break
-			}
+	p.mu.Lock()
+	hasTrigger := false
+	for _, f := range initialFiles {
+		if p.isTriggerFile(f, pattern) {
+			hasTrigger = true
+		} else {
 			p.files[f] = struct{}{}
 		}
-		p.mu.Unlock()
 	}
+	if hasTrigger {
+		p.flush(results)
+	}
+	p.mu.Unlock()
 
 	timeoutDuration := time.Duration(p.cfg.Poll.BatchTimeoutSeconds) * time.Second
 	timeoutTicker := time.NewTicker(timeoutDuration)
@@ -155,11 +157,7 @@ func (p *TriggerPoller) flush(results chan<- []string) {
 	// Security: Dispatch in a goroutine to prevent blocking the poller loop
 	// when the results channel consumer is slow.
 	go func(b []string) {
-		select {
-		case results <- b:
-		case <-time.After(10 * time.Second):
-			// Log or handle timeout if the engine is completely stuck
-		}
+		results <- b
 	}(batch)
 	p.files = make(map[string]struct{})
 }

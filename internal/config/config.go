@@ -82,11 +82,13 @@ const (
 // 2. Passed to the Engine during bootstrap.
 // 3. Used by individual components (Poller, Verifier, ActionHandler) to guide their behavior.
 type Config struct {
-	ServiceName string          `json:"service_name,omitempty"` // Windows only: Custom name for the service instance. In Linux, the service name is strictly managed via CLI.
-	Poll        PollConfig      `json:"poll"`
-	Integrity   IntegrityConfig `json:"integrity"`
-	Action      ActionConfig    `json:"action"`
-	Logging     []LoggingConfig `json:"logging,omitempty"`
+	ServiceName   string          `json:"service_name,omitempty"` // Windows only: Custom name for the service instance. In Linux, the service name is strictly managed via CLI.
+	Poll          PollConfig      `json:"poll"`
+	Integrity     IntegrityConfig `json:"integrity"`
+	Action        ActionConfig    `json:"action"`
+	Logging       []LoggingConfig `json:"logging,omitempty"`
+	GCPercent     int             `json:"gc_percent,omitempty"`
+	MemoryLimitMB int             `json:"memory_limit_mb,omitempty"`
 }
 
 // LoggingConfig contains parameters for the custom logging facility.
@@ -97,10 +99,12 @@ type LoggingConfig struct {
 
 // PollConfig contains parameters for the directory scanning engine.
 type PollConfig struct {
-	Directory           string        `json:"directory"`
-	Algorithm           PollAlgorithm `json:"algorithm"`
-	Value               interface{}   `json:"value"` // Interval/Batch count (int) or Trigger pattern (string)
-	BatchTimeoutSeconds int           `json:"batch_timeout_seconds"`
+	Directory              string        `json:"directory"`
+	Algorithm              PollAlgorithm `json:"algorithm"`
+	Value                  interface{}   `json:"value"` // Interval/Batch count (int) or Trigger pattern (string)
+	BatchTimeoutSeconds    int           `json:"batch_timeout_seconds"`
+	MaxBatchSize           int           `json:"max_batch_size,omitempty"`
+	MaxVerificationWorkers int           `json:"max_verification_workers,omitempty"`
 }
 
 // IntegrityConfig contains parameters for the file verification logic.
@@ -200,6 +204,18 @@ func setDefaults(cfg *Config) {
 	if (cfg.Poll.Algorithm == PollBatch || cfg.Poll.Algorithm == PollTrigger) && cfg.Poll.BatchTimeoutSeconds == 0 {
 		cfg.Poll.BatchTimeoutSeconds = 600 // 10 minutes default
 	}
+	if cfg.Poll.MaxBatchSize == 0 {
+		cfg.Poll.MaxBatchSize = 10000 // 10k default limit
+	}
+	if cfg.GCPercent == 0 {
+		cfg.GCPercent = 100 // default Go GC percent
+	}
+	if cfg.Poll.MaxVerificationWorkers == 0 {
+		cfg.Poll.MaxVerificationWorkers = runtime.NumCPU() * 2
+		if cfg.Poll.MaxVerificationWorkers > 64 {
+			cfg.Poll.MaxVerificationWorkers = 64
+		}
+	}
 
 	if cfg.Integrity.Algorithm == "" {
 		cfg.Integrity.Algorithm = IntegrityTimestamp
@@ -241,6 +257,13 @@ func validate(cfg *Config) error {
 
 	if cfg.Poll.Directory == "" || !filepath.IsAbs(cfg.Poll.Directory) {
 		return fmt.Errorf("poll directory must be an absolute path: %s", cfg.Poll.Directory)
+	}
+
+	if cfg.Poll.MaxBatchSize < 0 {
+		return fmt.Errorf("max_batch_size must be positive")
+	}
+	if cfg.Poll.MaxVerificationWorkers < 0 {
+		return fmt.Errorf("max_verification_workers must be positive")
 	}
 
 	// Security: Prevent path traversal in Poll Directory

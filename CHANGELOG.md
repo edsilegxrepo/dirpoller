@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-07-14
+
+### Added
+- **Event Coalescing**: Event-based poller now coalesces rapid-burst filesystem write events (under 50ms) into unified micro-batch slices, mitigating redundant directory scans and file-access collisions.
+- **Lazy Connection Pruning**: Dynamic pruning of idle connections in the SFTP connection pool. Sessions idle for more than 5 minutes are closed and discarded during checkout to prevent socket leaks.
+- **Dynamic Test Workspace Isolation**: Relocated test credentials and key generation to runtime-isolated temp workspaces, keeping the repository 100% clean of hardcoded secrets.
+
+### Fixed
+- **NTFS Sharing Violations**: Enforced strict handle closure ordering in `internal/archive` to guarantee file and directory descriptors are closed before OS-level unlinks (fixing Windows-native locks).
+- **Security Compliance**: Addressed all Gosec, Semgrep, and AST-Grep warnings across platform-specific scripts.
+- **Linter Cleanliness**: Fixed all GolangCI-Lint warnings (buffer pools, empty branches, unchecked defer closes).
+
+### Changed
+- **Zero-Allocation Buffer Pooling**: Converted `sync.Pool` byte slice caches in `internal/action` (SFTP) and `internal/integrity` (Hashing) to use slice pointers (`*[]byte`). This avoids Go runtime interface conversion heap allocations and drastically decreases GC overhead at 1M scale.
+- **Documentation**: Updated Architecture, Design, and Testing specifications to align with latest design changes.
+
 ## [0.1.2] - 2026-03-25
 
 ### Fixed

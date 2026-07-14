@@ -97,7 +97,7 @@ func (l *CustomLogger) LogProcess(msg string) error {
 
 	// Open in append mode, restricted permissions (0600)
 	// #nosec G304 - Log file name is constructed from safe base name and timestamp
-	f, err := os.OpenFile(filepath.Clean(logFileName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(filepath.Clean(logFileName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("[Logger:LogProcess] failed to open process log file: %w", err)
 	}
@@ -141,7 +141,7 @@ func (l *CustomLogger) LogExecution(summary ExecutionSummary) error {
 
 	// Create new file for this execution cycle
 	// #nosec G304 - Log file name is constructed from safe base name and timestamp
-	f, err := os.OpenFile(filepath.Clean(logFileName), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	f, err := os.OpenFile(filepath.Clean(logFileName), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("[Logger:LogExecution] failed to create activity log file: %w", err)
 	}

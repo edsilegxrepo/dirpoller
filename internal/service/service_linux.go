@@ -86,6 +86,8 @@ func writePrivilegedFile(path string, content []byte, mode os.FileMode) error {
 // runPrivilegedCommandWithStdin is a helper for commands that need stdin.
 // #nosec G204 - command execution is controlled by the installer logic
 var runPrivilegedCommandWithStdin = func(name string, args []string, stdin string) error {
+	// #nosec G204 - command execution is controlled by the installer logic
+	// nosemgrep
 	cmd := exec.Command(name, args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -176,7 +178,7 @@ func InstallServiceLinux(name, userGroup string) error {
 		fmt.Printf("Warning: Template unit %s already exists, overwriting...\n", targetTemplate)
 	}
 
-	if err := writePrivilegedFile(targetTemplate, []byte(processed), 0644); err != nil {
+	if err := writePrivilegedFile(targetTemplate, []byte(processed), 0o644); err != nil {
 		return fmt.Errorf("failed to write template unit: %w", err)
 	}
 
@@ -245,6 +247,7 @@ func replaceLine(content, prefix, newLine string) string {
 
 func runCommand(name string, args ...string) error {
 	// #nosec G204 - system management commands are controlled by the installer logic
+	// nosemgrep
 	cmd := exec.Command(name, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("command %s %v failed: %w (output: %s)", name, args, err, string(output))

@@ -16,6 +16,7 @@
 package poller
 
 import (
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -27,10 +28,12 @@ import (
 //
 // Objective: Leverage the Windows API to provide robust file lifecycle management
 // and enforce directory constraints.
-type windowsOSUtils struct{}
+type windowsOSUtils struct {
+	limit int
+}
 
-func newOSUtils() OSUtils {
-	return &windowsOSUtils{}
+func newOSUtils(limit int) OSUtils {
+	return &windowsOSUtils{limit: limit}
 }
 
 // IsLocked checks if a file is locked by another process using Windows-native CreateFile.
@@ -58,7 +61,6 @@ func (w *windowsOSUtils) IsLocked(path string) (bool, error) {
 		windows.FILE_ATTRIBUTE_NORMAL,
 		0,
 	)
-
 	if err != nil {
 		if err == windows.ERROR_SHARING_VIOLATION {
 			return true, nil
@@ -82,14 +84,25 @@ func (w *windowsOSUtils) IsLocked(path string) (bool, error) {
 // - Reads all entries in the configured directory.
 // - Returns true and an error if any entry is a directory.
 func (w *windowsOSUtils) HasSubfolders(dir string) (bool, error) {
-	entries, err := os.ReadDir(dir)
+	f, err := os.Open(filepath.Clean(dir))
 	if err != nil {
 		return false, err
 	}
+	defer func() { _ = f.Close() }()
 
-	for _, entry := range entries {
-		if entry.IsDir() {
-			return true, &ErrSubfolderDetected{Path: entry.Name()}
+	for {
+		entries, err := f.ReadDir(1000)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return false, err
+		}
+
+		for _, entry := range entries {
+			if entry.IsDir() {
+				return true, &ErrSubfolderDetected{Path: entry.Name()}
+			}
 		}
 	}
 
@@ -99,17 +112,35 @@ func (w *windowsOSUtils) HasSubfolders(dir string) (bool, error) {
 // GetFiles retrieves a list of all files in the directory.
 // It returns an error if a subfolder is detected during the scan.
 func (w *windowsOSUtils) GetFiles(dir string) ([]string, error) {
-	var files []string
-	entries, err := os.ReadDir(dir)
+	f, err := os.Open(filepath.Clean(dir))
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = f.Close() }()
 
-	for _, entry := range entries {
-		if entry.IsDir() {
-			return nil, &ErrSubfolderDetected{Path: entry.Name()}
+	var files []string
+	for {
+		entries, err := f.ReadDir(1000)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
 		}
-		files = append(files, filepath.Join(dir, entry.Name()))
+
+		for _, entry := range entries {
+			if entry.IsDir() {
+				return nil, &ErrSubfolderDetected{Path: entry.Name()}
+			}
+			fullPath := filepath.Join(dir, entry.Name())
+			if IsExcluded(fullPath) {
+				continue
+			}
+			files = append(files, fullPath)
+			if w.limit > 0 && len(files) >= w.limit {
+				return files, nil
+			}
+		}
 	}
 
 	return files, nil

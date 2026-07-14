@@ -38,7 +38,7 @@ func TestLinuxOSUtils_IsLocked(t *testing.T) {
 
 	t.Run("Directory", func(t *testing.T) {
 		dirPath := filepath.Join(tempDir, "testdir")
-		if err := os.Mkdir(dirPath, 0755); err != nil {
+		if err := os.Mkdir(dirPath, 0o755); err != nil {
 			t.Fatalf("failed to create dir: %v", err)
 		}
 
@@ -86,7 +86,7 @@ func TestLinuxOSUtils_IsLocked(t *testing.T) {
 
 	t.Run("UnlockedFile", func(t *testing.T) {
 		filePath := filepath.Join(tempDir, "unlocked.txt")
-		if err := os.WriteFile(filePath, []byte("test"), 0644); err != nil {
+		if err := os.WriteFile(filePath, []byte("test"), 0o644); err != nil {
 			t.Fatalf("failed to create file: %v", err)
 		}
 

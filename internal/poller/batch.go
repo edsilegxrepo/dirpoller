@@ -36,7 +36,7 @@ type BatchPoller struct {
 func NewBatchPoller(cfg *config.Config) *BatchPoller {
 	return &BatchPoller{
 		cfg:   cfg,
-		utils: NewOSUtils(),
+		utils: NewOSUtils(cfg.Poll.MaxBatchSize),
 		files: make(map[string]struct{}),
 		newWatcher: func() (Watcher, error) {
 			return newRealWatcher()
@@ -64,19 +64,17 @@ func (p *BatchPoller) Start(ctx context.Context, results chan<- []string) error 
 		return &ErrWatcherInitialization{Err: err}
 	}
 
-	// Initial scan
-	if _, err := p.utils.HasSubfolders(p.cfg.Poll.Directory); err != nil {
+	// Initial scan (GetFiles also detects subfolders)
+	initialFiles, err := p.utils.GetFiles(p.cfg.Poll.Directory)
+	if err != nil {
 		return err
 	}
-	initialFiles, err := p.utils.GetFiles(p.cfg.Poll.Directory)
-	if err == nil {
-		p.mu.Lock()
-		for _, f := range initialFiles {
-			p.files[f] = struct{}{}
-		}
-		p.checkThreshold(results)
-		p.mu.Unlock()
+	p.mu.Lock()
+	for _, f := range initialFiles {
+		p.files[f] = struct{}{}
 	}
+	p.checkThreshold(results)
+	p.mu.Unlock()
 
 	timeoutTicker := time.NewTicker(time.Duration(p.cfg.Poll.BatchTimeoutSeconds) * time.Second)
 	defer timeoutTicker.Stop()
@@ -143,11 +141,7 @@ func (p *BatchPoller) flush(results chan<- []string) {
 	// Security: Dispatch in a goroutine to prevent blocking the poller loop
 	// when the results channel consumer is slow.
 	go func(b []string) {
-		select {
-		case results <- b:
-		case <-time.After(10 * time.Second):
-			// Log or handle timeout if the engine is completely stuck
-		}
+		results <- b
 	}(batch)
 	p.files = make(map[string]struct{})
 }

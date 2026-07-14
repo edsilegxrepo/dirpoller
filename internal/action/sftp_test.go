@@ -83,7 +83,7 @@ func (d *functionalDialer) Dial(n, a string, c *ssh.ClientConfig) (SFTPClient, S
 func TestSFTPHandler_Execute_Comprehensive(t *testing.T) {
 	testDir := getActionTestDir("SFTPExecuteComp")
 	f1 := filepath.Join(testDir, "f1.txt")
-	_ = os.WriteFile(f1, []byte("data"), 0644)
+	_ = os.WriteFile(f1, []byte("data"), 0o644)
 
 	cfg := &config.Config{
 		Action: config.ActionConfig{
@@ -252,15 +252,22 @@ func TestSFTPHandler_Reconnect_Logic(t *testing.T) {
 
 		h := NewSFTPHandler(cfg)
 		h.dialer = mDialer
-		h.client = &mockSFTPClientAdapter{mSFTP1}
-		h.conn = mSSH1
+
+		sess1 := &sftpSession{
+			client: &mockSFTPClientAdapter{mSFTP1},
+			conn:   mSSH1,
+		}
+		h.allSessions = append(h.allSessions, sess1)
+		h.pool <- sess1
+		h.activeConns = 1
+
 		ctx := context.Background()
 
-		client, err := h.getOrCreateClient(ctx)
+		sess, err := h.acquireSession(ctx)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
-		if client == nil || !dialed {
+		if sess == nil || !dialed {
 			t.Error("expected reconnection")
 		}
 	})
@@ -390,7 +397,7 @@ func TestActionErrors_Unwrap_All(t *testing.T) {
 func TestSFTPHandler_LoadFile_RenameFail(t *testing.T) {
 	testDir := getActionTestDir("SFTPRenameFail")
 	f1 := filepath.Join(testDir, "f1.txt")
-	_ = os.WriteFile(f1, []byte("data"), 0644)
+	_ = os.WriteFile(f1, []byte("data"), 0o644)
 
 	mSFTP := &testutils.MockSFTPClient{
 		RenameErr: fmt.Errorf("rename fail"),
@@ -426,7 +433,7 @@ func TestSFTPHandler_Connect_SSHKey(t *testing.T) {
 	testDir := getActionTestDir("SSHKeyAuth")
 	keyFile := filepath.Join(testDir, "id_rsa")
 	// Note: We're not using a real key here, just testing the error path of ParsePrivateKey
-	_ = os.WriteFile(keyFile, []byte("invalid key data"), 0600)
+	_ = os.WriteFile(keyFile, []byte("invalid key data"), 0o600)
 
 	cfg := &config.Config{
 		Action: config.ActionConfig{
@@ -447,7 +454,7 @@ func TestSFTPHandler_Connect_SSHKey(t *testing.T) {
 func TestSFTPHandler_Connect_SSHKeyWithPassphrase(t *testing.T) {
 	testDir := getActionTestDir("SSHKeyPassphrase")
 	keyFile := filepath.Join(testDir, "id_rsa_pass")
-	_ = os.WriteFile(keyFile, []byte("invalid key data"), 0600)
+	_ = os.WriteFile(keyFile, []byte("invalid key data"), 0o600)
 
 	cfg := &config.Config{
 		Action: config.ActionConfig{
@@ -494,7 +501,7 @@ func TestSFTPHandler_UploadFile_LocalStatFail(t *testing.T) {
 func TestSFTPHandler_UploadFile_TransferFail(t *testing.T) {
 	testDir := getActionTestDir("SFTPTransferFail")
 	f1 := filepath.Join(testDir, "f1.txt")
-	_ = os.WriteFile(f1, []byte("data"), 0644)
+	_ = os.WriteFile(f1, []byte("data"), 0o644)
 
 	mFile := &testutils.MockSFTPFile{WriteErr: fmt.Errorf("write fail")}
 	mSFTP := &testutils.MockSFTPClient{CreatedFile: mFile}
@@ -515,7 +522,7 @@ func TestSFTPHandler_Close_NoClient(t *testing.T) {
 func TestSFTPHandler_Execute_ContextDone(t *testing.T) {
 	testDir := getActionTestDir("SFTPContextDone")
 	f1 := filepath.Join(testDir, "f1.txt")
-	_ = os.WriteFile(f1, []byte("data"), 0644)
+	_ = os.WriteFile(f1, []byte("data"), 0o644)
 
 	cfg := &config.Config{
 		Action: config.ActionConfig{
@@ -541,4 +548,70 @@ func TestSFTPHandler_DialerOptimization_Fallback(t *testing.T) {
 	// This tests the branch in realDialer where it falls back if MaxPacket fails.
 	// We can't easily trigger this with the real dialer without a real server,
 	// but we've covered the logic in sftp.go via code review and existing tests.
+}
+
+func TestSFTPHandler_LazyConnectionPruning(t *testing.T) {
+	cfg := &config.Config{
+		Action: config.ActionConfig{
+			ConcurrentConnections: 1,
+			SFTP: config.SFTPConfig{
+				Host: "localhost",
+			},
+		},
+	}
+	h := NewSFTPHandler(cfg)
+
+	// Create mock clients
+	mSFTP := &testutils.MockSFTPClient{}
+	mSSH := &testutils.MockSSHClient{}
+
+	// Initialize h.pool and h.allSessions manually
+	h.pool = make(chan *sftpSession, 1)
+
+	// 1. Create a session that is NOT idle (> 5 minutes) and verify it is returned as-is
+	freshSess := &sftpSession{
+		client:   &mockSFTPClientAdapter{mSFTP},
+		conn:     mSSH,
+		lastUsed: time.Now(),
+	}
+	h.allSessions = append(h.allSessions, freshSess)
+	h.pool <- freshSess
+	h.activeConns = 1
+
+	ctx := context.Background()
+	sess, err := h.acquireSession(ctx)
+	if err != nil {
+		t.Fatalf("failed to acquire fresh session: %v", err)
+	}
+	if sess != freshSess {
+		t.Errorf("expected fresh session to be returned, got %v", sess)
+	}
+
+	// Return the session back to the pool
+	h.pool <- sess
+
+	// 2. Backdate the session to be idle for 6 minutes (expired)
+	sess.lastUsed = time.Now().Add(-6 * time.Minute)
+
+	// Since the expired session will be closed, acquireSession will attempt to dial a new one.
+	// We configure the dialer with a new mock client to verify that it dials a new session.
+	newSFTP := &testutils.MockSFTPClient{}
+	newSSH := &testutils.MockSSHClient{}
+	h.dialer = &mockDialerAdapter{&testutils.MockDialer{Client: newSFTP, Conn: newSSH}}
+
+	sess, err = h.acquireSession(ctx)
+	if err != nil {
+		t.Fatalf("failed to acquire session after pruning: %v", err)
+	}
+	if sess == freshSess {
+		t.Errorf("expected fresh session to be pruned, but it was returned")
+	}
+
+	// Verify the pruned session was closed and removed
+	if h.activeConns != 1 {
+		t.Errorf("expected activeConns to remain 1 after pruning and recreation, got %d", h.activeConns)
+	}
+	if len(h.allSessions) != 1 || h.allSessions[0] == freshSess {
+		t.Errorf("expected allSessions to contain only the new session, got: %v", h.allSessions)
+	}
 }

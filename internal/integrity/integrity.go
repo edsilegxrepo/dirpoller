@@ -26,6 +26,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"criticalsys.net/dirpoller/internal/config"
@@ -33,19 +34,31 @@ import (
 	"github.com/zeebo/xxh3"
 )
 
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 1*1024*1024)
+		return &b
+	},
+}
+
 // Verifier orchestrates multiple attempts to ensure file integrity.
 // A file is considered "stable" only if its property (size, timestamp, or hash)
 // remains unchanged across N consecutive attempts at specific intervals.
 type Verifier struct {
-	cfg   *config.Config
-	utils poller.OSUtils
+	cfg    *config.Config
+	utils  poller.OSUtils
+	mu     sync.Mutex
+	hashes map[string]string
+	sizes  map[string]int64
 }
 
 // NewVerifier creates a new integrity verifier instance.
 func NewVerifier(cfg *config.Config) *Verifier {
 	return &Verifier{
-		cfg:   cfg,
-		utils: poller.NewOSUtils(),
+		cfg:    cfg,
+		utils:  poller.NewOSUtils(0), // No limit needed for lock/stat checks on individual paths
+		hashes: make(map[string]string),
+		sizes:  make(map[string]int64),
 	}
 }
 
@@ -102,6 +115,10 @@ func (v *Verifier) getIntegrityValue(path string) (string, error) {
 		return "", err
 	}
 
+	v.mu.Lock()
+	v.sizes[path] = info.Size()
+	v.mu.Unlock()
+
 	switch v.cfg.Integrity.Algorithm {
 	case config.IntegritySize:
 		return fmt.Sprintf("%d", info.Size()), nil
@@ -114,6 +131,14 @@ func (v *Verifier) getIntegrityValue(path string) (string, error) {
 	}
 }
 
+// GetCachedSize returns the cached size of the file if available.
+func (v *Verifier) GetCachedSize(path string) (int64, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	size, ok := v.sizes[path]
+	return size, ok
+}
+
 // CalculateHash calculates the XXH3-128 of a file.
 // This is used for both the stability check algorithm and for logging in the activity report.
 func (v *Verifier) CalculateHash(path string) (string, error) {
@@ -121,6 +146,13 @@ func (v *Verifier) CalculateHash(path string) (string, error) {
 }
 
 func (v *Verifier) calculateHash(path string) (string, error) {
+	v.mu.Lock()
+	if val, ok := v.hashes[path]; ok {
+		v.mu.Unlock()
+		return val, nil
+	}
+	v.mu.Unlock()
+
 	f, err := os.Open(filepath.Clean(path)) // #nosec G304
 	if err != nil {
 		return "", err
@@ -132,10 +164,27 @@ func (v *Verifier) calculateHash(path string) (string, error) {
 	}()
 
 	h := xxh3.New128()
-	buf := make([]byte, 1*1024*1024)
+	bufPtr := bufPool.Get().(*[]byte)
+	defer bufPool.Put(bufPtr)
+	buf := *bufPtr
+
 	if _, err := io.CopyBuffer(h, f, buf); err != nil {
 		return "", err
 	}
 
-	return hex.EncodeToString(h.Sum(nil)), nil
+	hash := hex.EncodeToString(h.Sum(nil))
+
+	v.mu.Lock()
+	v.hashes[path] = hash
+	v.mu.Unlock()
+
+	return hash, nil
+}
+
+// ClearCache flushes all cached hashes and sizes from memory.
+func (v *Verifier) ClearCache() {
+	v.mu.Lock()
+	v.hashes = make(map[string]string)
+	v.sizes = make(map[string]int64)
+	v.mu.Unlock()
 }

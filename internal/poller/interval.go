@@ -14,8 +14,9 @@ package poller
 
 import (
 	"context"
-	"criticalsys.net/dirpoller/internal/config"
 	"time"
+
+	"criticalsys.net/dirpoller/internal/config"
 )
 
 // IntervalPoller discovers files by performing a full directory scan at fixed time steps.
@@ -28,7 +29,7 @@ type IntervalPoller struct {
 func NewIntervalPoller(cfg *config.Config) *IntervalPoller {
 	return &IntervalPoller{
 		cfg:   cfg,
-		utils: NewOSUtils(),
+		utils: NewOSUtils(cfg.Poll.MaxBatchSize),
 	}
 }
 
@@ -50,7 +51,7 @@ func (p *IntervalPoller) Start(ctx context.Context, results chan<- []string) err
 	defer ticker.Stop()
 
 	// Initial check
-	if err := p.poll(results); err != nil {
+	if err := p.poll(ctx, results); err != nil {
 		return err
 	}
 
@@ -59,7 +60,7 @@ func (p *IntervalPoller) Start(ctx context.Context, results chan<- []string) err
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := p.poll(results); err != nil {
+			if err := p.poll(ctx, results); err != nil {
 				return err
 			}
 		}
@@ -68,23 +69,17 @@ func (p *IntervalPoller) Start(ctx context.Context, results chan<- []string) err
 
 // poll performs a single scan of the directory. It enforces the non-recursive requirement
 // before collecting and sending files to the results channel.
-func (p *IntervalPoller) poll(results chan<- []string) error {
-	if _, err := p.utils.HasSubfolders(p.cfg.Poll.Directory); err != nil {
-		return err
-	}
+func (p *IntervalPoller) poll(ctx context.Context, results chan<- []string) error {
 	files, err := p.utils.GetFiles(p.cfg.Poll.Directory)
 	if err != nil {
 		return err
 	}
 	if len(files) > 0 {
-		// Security: Dispatch in a goroutine to prevent blocking the poller loop
-		go func(f []string) {
-			select {
-			case results <- f:
-			case <-time.After(10 * time.Second):
-				// Log or handle timeout
-			}
-		}(files)
+		select {
+		case results <- files:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return nil
 }

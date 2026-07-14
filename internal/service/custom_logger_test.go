@@ -13,12 +13,13 @@
 package service
 
 import (
-	"criticalsys.net/dirpoller/internal/testutils"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"criticalsys.net/dirpoller/internal/testutils"
 )
 
 // TestCustomLogger_LogExecution verifies the formatting and creation of per-cycle activity logs.
@@ -124,7 +125,7 @@ func TestCustomLogger_PurgeOldLogs_SkipDir(t *testing.T) {
 
 	// Create a sub-directory that matches the prefix to cover the entry.IsDir() skip
 	subDir := filepath.Join(testDir, "test_process_20200101.log")
-	_ = os.MkdirAll(subDir, 0750)
+	_ = os.MkdirAll(subDir, 0o750)
 
 	if err := logger.LogProcess("Triggering purge"); err != nil {
 		t.Fatalf("LogProcess failed: %v", err)
@@ -144,13 +145,13 @@ func TestCustomLogger_PurgeOldLogs(t *testing.T) {
 
 	// Create an old process log file
 	oldProcessLog := filepath.Join(testDir, "test_process_20200101.log")
-	if err := os.WriteFile(oldProcessLog, []byte("old process"), 0644); err != nil {
+	if err := os.WriteFile(oldProcessLog, []byte("old process"), 0o644); err != nil {
 		t.Fatalf("failed to create old process log: %v", err)
 	}
 
 	// Create an old activity log file
 	oldActivityLog := filepath.Join(testDir, "test_activity_20200101-120000.log")
-	if err := os.WriteFile(oldActivityLog, []byte("old activity"), 0644); err != nil {
+	if err := os.WriteFile(oldActivityLog, []byte("old activity"), 0o644); err != nil {
 		t.Fatalf("failed to create old activity log: %v", err)
 	}
 
@@ -161,7 +162,7 @@ func TestCustomLogger_PurgeOldLogs(t *testing.T) {
 
 	// Create a recent process log
 	recentLog := filepath.Join(testDir, "test_process_"+time.Now().Format("20060102")+".log")
-	if err := os.WriteFile(recentLog, []byte("recent"), 0644); err != nil {
+	if err := os.WriteFile(recentLog, []byte("recent"), 0o644); err != nil {
 		t.Fatalf("failed to create recent log: %v", err)
 	}
 

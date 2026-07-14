@@ -36,19 +36,13 @@ import (
 // - Reliability: Enforces execution timeouts and captures all output.
 // - Security: Validates absolute paths and handles execution contexts.
 type ScriptHandler struct {
-	cfg       *config.Config
-	semaphore chan struct{}
+	cfg *config.Config
 }
 
-// NewScriptHandler creates a new script action handler with a persistent semaphore.
+// NewScriptHandler creates a new script action handler.
 func NewScriptHandler(cfg *config.Config) *ScriptHandler {
-	conns := cfg.Action.ConcurrentConnections
-	if conns <= 0 {
-		conns = 1
-	}
 	return &ScriptHandler{
-		cfg:       cfg,
-		semaphore: make(chan struct{}, conns),
+		cfg: cfg,
 	}
 }
 
@@ -63,27 +57,41 @@ func NewScriptHandler(cfg *config.Config) *ScriptHandler {
 // 3. Script Invocation: Executes the external command with the absolute file path.
 // 4. Result Aggregation: Collects exit codes and captures combined output for reporting.
 func (h *ScriptHandler) Execute(ctx context.Context, files []string) ([]string, error) {
+	conns := h.cfg.Action.ConcurrentConnections
+	if conns <= 0 {
+		conns = 1
+	}
+	if len(files) < conns {
+		conns = len(files)
+	}
+
+	jobs := make(chan string, len(files))
+	for _, f := range files {
+		jobs <- f
+	}
+	close(jobs)
+
 	var wg sync.WaitGroup
 	errChan := make(chan error, len(files))
 	successChan := make(chan string, len(files))
 
-	for _, file := range files {
+	for w := 0; w < conns; w++ {
 		wg.Add(1)
-		go func(f string) {
+		go func() {
 			defer wg.Done()
-
-			select {
-			case <-ctx.Done():
-				return
-			case h.semaphore <- struct{}{}:
-				defer func() { <-h.semaphore }()
-				if err := h.executeScript(ctx, f); err != nil {
-					errChan <- err
-				} else {
-					successChan <- f
+			for f := range jobs {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					if err := h.executeScript(ctx, f); err != nil {
+						errChan <- err
+					} else {
+						successChan <- f
+					}
 				}
 			}
-		}(file)
+		}()
 	}
 
 	wg.Wait()
@@ -132,9 +140,8 @@ func (h *ScriptHandler) executeScript(ctx context.Context, file string) error {
 	childCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Performance: Script execution is sequential per batch by default in engine.go
-	// but here we ensure the command is executed safely.
 	// #nosec G204 - Script path is validated as absolute and existing in config.go
+	// nosemgrep
 	cmd := exec.CommandContext(childCtx, h.cfg.Action.Script.Path, absFile)
 
 	output, err := cmd.CombinedOutput()

@@ -75,11 +75,11 @@ func TestArchive_Process_Comprehensive(t *testing.T) {
 	testDir := getArchiveTestDir("ProcessComp")
 	sourceDir := filepath.Join(testDir, "source")
 	archiveDir := filepath.Join(testDir, "archive")
-	_ = os.MkdirAll(sourceDir, 0750)
-	_ = os.MkdirAll(archiveDir, 0750)
+	_ = os.MkdirAll(sourceDir, 0o750)
+	_ = os.MkdirAll(archiveDir, 0o750)
 
 	f1 := filepath.Join(sourceDir, "f1.txt")
-	_ = os.WriteFile(f1, []byte("data1"), 0644)
+	_ = os.WriteFile(f1, []byte("data1"), 0o644)
 
 	t.Run("EmptyFiles", func(t *testing.T) {
 		testDir := getArchiveTestDir("EmptyFiles")
@@ -153,7 +153,7 @@ func TestArchive_Process_Comprehensive(t *testing.T) {
 		// Create a directory where a file should be moved to trigger rename error
 		tempDir := getArchiveTestDir("StageRenameErr")
 		sourceFile := filepath.Join(tempDir, "source.txt")
-		_ = os.WriteFile(sourceFile, []byte("data"), 0644)
+		_ = os.WriteFile(sourceFile, []byte("data"), 0o644)
 
 		cfg := &config.Config{
 			Action: config.ActionConfig{
@@ -168,7 +168,7 @@ func TestArchive_Process_Comprehensive(t *testing.T) {
 		// stagingDir will be tempDir/.staging/<uuid>
 		// We can't easily predict the UUID, but we can try to make the .staging dir a file
 		stagingBase := filepath.Join(tempDir, ".staging")
-		_ = os.WriteFile(stagingBase, []byte("i am a file"), 0644)
+		_ = os.WriteFile(stagingBase, []byte("i am a file"), 0o644)
 
 		_, _, err := a.stageFiles(context.Background(), []string{sourceFile})
 		if err == nil {
@@ -179,11 +179,11 @@ func TestArchive_Process_Comprehensive(t *testing.T) {
 
 func TestArchive_Rollback_Mixed(t *testing.T) {
 	testDir := getArchiveTestDir("RollbackMixed")
-	_ = os.MkdirAll(testDir, 0750)
+	_ = os.MkdirAll(testDir, 0o750)
 
 	f1 := filepath.Join(testDir, "staged1.txt")
 	f1Orig := filepath.Join(testDir, "orig1.txt")
-	_ = os.WriteFile(f1, []byte("d1"), 0644)
+	_ = os.WriteFile(f1, []byte("d1"), 0o644)
 
 	cfg := &config.Config{
 		Action: config.ActionConfig{
@@ -198,7 +198,7 @@ func TestArchive_Rollback_Mixed(t *testing.T) {
 		"nonexistent": "whatever",
 	}
 
-	err := a.rollback(staged)
+	err := a.rollback(context.Background(), staged)
 	if err == nil || !strings.Contains(err.Error(), "rollback incomplete") {
 		t.Errorf("expected incomplete rollback, got %v", err)
 	}
@@ -210,11 +210,11 @@ func TestArchive_Rollback_Mixed(t *testing.T) {
 
 func TestArchive_MoveToFolder_MkdirFail(t *testing.T) {
 	testDir := getArchiveTestDir("MoveMkdirFail")
-	_ = os.MkdirAll(testDir, 0750)
+	_ = os.MkdirAll(testDir, 0o750)
 
 	// Create a file where we want to create a directory
 	blockPath := filepath.Join(testDir, "blocked")
-	_ = os.WriteFile(blockPath, []byte("data"), 0644)
+	_ = os.WriteFile(blockPath, []byte("data"), 0o644)
 
 	cfg := &config.Config{
 		Action: config.ActionConfig{
@@ -232,9 +232,9 @@ func TestArchive_MoveToFolder_MkdirFail(t *testing.T) {
 
 func TestArchive_AddFileToArchive_Errors(t *testing.T) {
 	testDir := getArchiveTestDir("AddFileErrors")
-	_ = os.MkdirAll(testDir, 0750)
+	_ = os.MkdirAll(testDir, 0o750)
 	f1 := filepath.Join(testDir, "f1.txt")
-	_ = os.WriteFile(f1, []byte("data"), 0644)
+	_ = os.WriteFile(f1, []byte("data"), 0o644)
 
 	cfg := &config.Config{
 		Action: config.ActionConfig{
@@ -271,11 +271,11 @@ func TestArchive_AddFileToArchive_Errors(t *testing.T) {
 
 func TestArchive_CompressToArchive_Errors(t *testing.T) {
 	testDir := getArchiveTestDir("CompressErrors")
-	_ = os.MkdirAll(testDir, 0750)
+	_ = os.MkdirAll(testDir, 0o750)
 	stagingDir := filepath.Join(testDir, "staging")
-	_ = os.MkdirAll(stagingDir, 0750)
+	_ = os.MkdirAll(stagingDir, 0o750)
 	f1 := filepath.Join(stagingDir, "f1.txt")
-	_ = os.WriteFile(f1, []byte("data"), 0644)
+	_ = os.WriteFile(f1, []byte("data"), 0o644)
 
 	cfg := &config.Config{
 		Action: config.ActionConfig{
@@ -298,7 +298,7 @@ func TestArchive_CompressToArchive_Errors(t *testing.T) {
 
 	t.Run("CreateError", func(t *testing.T) {
 		filePath := filepath.Join(testDir, "afile")
-		_ = os.WriteFile(filePath, []byte("x"), 0644)
+		_ = os.WriteFile(filePath, []byte("x"), 0o644)
 		badCfg := &config.Config{
 			Action: config.ActionConfig{
 				PostProcess: config.PostProcessConfig{ArchivePath: filePath},
@@ -369,8 +369,8 @@ func TestArchive_FullCycle_AllActions(t *testing.T) {
 	testDir := getArchiveTestDir("FullCycleAll")
 	sourceDir := filepath.Join(testDir, "source")
 	archiveDir := filepath.Join(testDir, "archive")
-	_ = os.MkdirAll(sourceDir, 0750)
-	_ = os.MkdirAll(archiveDir, 0750)
+	_ = os.MkdirAll(sourceDir, 0o750)
+	_ = os.MkdirAll(archiveDir, 0o750)
 
 	actions := []config.PostAction{
 		config.PostActionDelete,
@@ -382,7 +382,7 @@ func TestArchive_FullCycle_AllActions(t *testing.T) {
 		t.Run(string(action), func(t *testing.T) {
 			fname := fmt.Sprintf("file-%s.txt", action)
 			fpath := filepath.Join(sourceDir, fname)
-			_ = os.WriteFile(fpath, []byte("data"), 0644)
+			_ = os.WriteFile(fpath, []byte("data"), 0o644)
 
 			cfg := &config.Config{
 				Action: config.ActionConfig{
@@ -406,12 +406,12 @@ func TestArchive_FullCycle_AllActions(t *testing.T) {
 
 func TestArchive_CompressToArchive_Context(t *testing.T) {
 	testDir := getArchiveTestDir("CompressContext")
-	_ = os.MkdirAll(testDir, 0750)
+	_ = os.MkdirAll(testDir, 0o750)
 	stagingDir := filepath.Join(testDir, "staging")
-	_ = os.MkdirAll(stagingDir, 0750)
+	_ = os.MkdirAll(stagingDir, 0o750)
 
 	f1 := filepath.Join(stagingDir, "f1.txt")
-	_ = os.WriteFile(f1, []byte("data"), 0644)
+	_ = os.WriteFile(f1, []byte("data"), 0o644)
 
 	cfg := &config.Config{
 		Action: config.ActionConfig{

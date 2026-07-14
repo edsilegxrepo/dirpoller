@@ -29,8 +29,8 @@ import (
 
 // setupTestUnit creates a dummy unit template for testing.
 func _() {
-	var _ = setupTestUnit
-	var _ = execSudo
+	_ = setupTestUnit
+	_ = execSudo
 }
 
 func setupTestUnit(t *testing.T) string {
@@ -48,7 +48,7 @@ ExecStart=/usr/local/bin/dirpoller -config /etc/dirpoller/config.json
 WantedBy=multi-user.target
 `
 	tmpFile := filepath.Join(t.TempDir(), "dirpoller.service")
-	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(tmpFile, []byte(content), 0o644); err != nil {
 		t.Fatalf("failed to create test unit template: %v", err)
 	}
 	return tmpFile
@@ -77,7 +77,7 @@ func TestLinuxInstaller_RootPrivileges(t *testing.T) {
 	}
 
 	// Create a dummy dirpoller.service in the current directory so os.Stat succeeds
-	_ = os.WriteFile("dirpoller.service", []byte("[Unit]\nDescription=Test"), 0644)
+	_ = os.WriteFile("dirpoller.service", []byte("[Unit]\nDescription=Test"), 0o644)
 	defer func() { _ = os.Remove("dirpoller.service") }()
 
 	// Mock CanSudo to return false to simulate lack of privileges
@@ -162,7 +162,7 @@ ExecStart=/usr/local/bin/dirpoller -config /etc/dirpoller/config.json`
 		}()
 
 		// Create dummy service file in CWD for the installer to find
-		_ = os.WriteFile("dirpoller.service", []byte("[Unit]\nDescription=Test"), 0644)
+		_ = os.WriteFile("dirpoller.service", []byte("[Unit]\nDescription=Test"), 0o644)
 		defer func() { _ = os.Remove("dirpoller.service") }()
 
 		err := InstallServiceLinux("dirpoller@config1", "testuser:testgroup")
@@ -226,7 +226,7 @@ ExecStart=/usr/local/bin/dirpoller -config /etc/dirpoller/config.json`
 	// 8. writePrivilegedFile Root
 	t.Run("writePrivilegedFile_Root", func(t *testing.T) {
 		if CheckRoot() {
-			err := writePrivilegedFile(filepath.Join(t.TempDir(), "test"), []byte("test"), 0644)
+			err := writePrivilegedFile(filepath.Join(t.TempDir(), "test"), []byte("test"), 0o644)
 			if err != nil {
 				t.Errorf("expected nil error, got %v", err)
 			}
@@ -248,7 +248,7 @@ ExecStart=/usr/local/bin/dirpoller -config /etc/dirpoller/config.json`
 			CanSudo = func() bool { return false }
 			defer func() { CanSudo = oldCanSudo }()
 
-			err := writePrivilegedFile("/etc/shadow", []byte("test"), 0644)
+			err := writePrivilegedFile("/etc/shadow", []byte("test"), 0o644)
 			if err == nil || !strings.Contains(err.Error(), "administrative privileges") {
 				t.Errorf("expected sudo privilege error, got %v", err)
 			}
@@ -297,7 +297,7 @@ ExecStart=/usr/local/bin/dirpoller -config /etc/dirpoller/config.json`
 		}
 		defer func() { runPrivilegedCommandWithStdin = oldRunPrivilegedWithStdin }()
 
-		_ = os.WriteFile("dirpoller.service", []byte("[Unit]\nDescription=Test"), 0644)
+		_ = os.WriteFile("dirpoller.service", []byte("[Unit]\nDescription=Test"), 0o644)
 		defer func() { _ = os.Remove("dirpoller.service") }()
 
 		err := InstallServiceLinux("unit@instance", "")
@@ -347,7 +347,7 @@ ExecStart=/usr/local/bin/dirpoller -config /etc/dirpoller/config.json`
 		}
 		defer func() { runCommandFunc = oldRunCommand }()
 
-		_ = os.WriteFile("dirpoller.service", []byte("[Unit]\nDescription=Test"), 0644)
+		_ = os.WriteFile("dirpoller.service", []byte("[Unit]\nDescription=Test"), 0o644)
 		defer func() { _ = os.Remove("dirpoller.service") }()
 
 		err := InstallServiceLinux("unit@instance", "")
@@ -366,7 +366,7 @@ ExecStart=/usr/local/bin/dirpoller -config /etc/dirpoller/config.json`
 		}
 		defer func() { runCommandFunc = oldRunCommand }()
 
-		_ = os.WriteFile("dirpoller.service", []byte("[Unit]\nDescription=Test"), 0644)
+		_ = os.WriteFile("dirpoller.service", []byte("[Unit]\nDescription=Test"), 0o644)
 		defer func() { _ = os.Remove("dirpoller.service") }()
 
 		err := InstallServiceLinux("unit@instance", "")
@@ -382,7 +382,7 @@ ExecStart=/usr/local/bin/dirpoller -config /etc/dirpoller/config.json`
 			CanSudo = func() bool { return false }
 			defer func() { CanSudo = oldCanSudo }()
 
-			err := writePrivilegedFile("/tmp/protected", []byte("test"), 0644)
+			err := writePrivilegedFile("/tmp/protected", []byte("test"), 0o644)
 			if err == nil || !strings.Contains(err.Error(), "administrative privileges") {
 				t.Errorf("expected sudo error, got %v", err)
 			}
@@ -423,7 +423,7 @@ ExecStart=/usr/local/bin/dirpoller -config /etc/dirpoller/config.json`
 			runPrivilegedCommandWithStdin = oldRunPrivilegedWithStdin
 		}()
 
-		_ = os.WriteFile("dirpoller.service", []byte("User=\nGroup=\nEnvironment=HOME=\nExecStart="), 0644)
+		_ = os.WriteFile("dirpoller.service", []byte("User=\nGroup=\nEnvironment=HOME=\nExecStart="), 0o644)
 		defer func() { _ = os.Remove("dirpoller.service") }()
 
 		err := InstallServiceLinux("unit@instance", "customuser:customgroup")
@@ -459,7 +459,7 @@ ExecStart=/usr/local/bin/dirpoller -config /etc/dirpoller/config.json`
 			runPrivilegedCommandWithStdin = oldRunPrivilegedWithStdin
 		}()
 
-		_ = os.WriteFile("dirpoller.service", []byte("User=\nEnvironment=HOME=\nExecStart="), 0644)
+		_ = os.WriteFile("dirpoller.service", []byte("User=\nEnvironment=HOME=\nExecStart="), 0o644)
 		defer func() { _ = os.Remove("dirpoller.service") }()
 
 		err := InstallServiceLinux("unit@instance", "root")

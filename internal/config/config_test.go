@@ -15,12 +15,13 @@
 package config
 
 import (
-	"criticalsys.net/dirpoller/internal/testutils"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"criticalsys.net/dirpoller/internal/testutils"
 )
 
 func getTestDir(name string) string {
@@ -41,7 +42,7 @@ func getTestDir(name string) string {
 // - Mandatory fields must be strictly enforced.
 func TestConfigValidation_Comprehensive(t *testing.T) {
 	testDir := getTestDir("ValidationComp")
-	_ = os.MkdirAll(testDir, 0750)
+	_ = os.MkdirAll(testDir, 0o750)
 
 	t.Run("ValidConfig_SFTP", func(t *testing.T) {
 		cfg := &Config{
@@ -85,7 +86,7 @@ func TestConfigValidation_Comprehensive(t *testing.T) {
 	t.Run("ValidConfig_PostActions", func(t *testing.T) {
 		exe, _ := os.Executable()
 		archiveDir := filepath.Join(testDir, "archive")
-		_ = os.MkdirAll(archiveDir, 0750)
+		_ = os.MkdirAll(archiveDir, 0o750)
 
 		actions := []PostAction{PostActionMoveArchive, PostActionMoveCompress}
 		for _, action := range actions {
@@ -315,7 +316,7 @@ func TestConfigValidation_Comprehensive(t *testing.T) {
 
 	t.Run("SSHKey_Validation", func(t *testing.T) {
 		keyFile := filepath.Join(testDir, "id_rsa")
-		_ = os.WriteFile(keyFile, []byte("key"), 0600)
+		_ = os.WriteFile(keyFile, []byte("key"), 0o600)
 
 		cases := []struct {
 			name string
@@ -554,7 +555,7 @@ func TestConfig_Defaults_All(t *testing.T) {
 
 func TestConfig_Load(t *testing.T) {
 	testDir := getTestDir("ConfigLoad")
-	_ = os.MkdirAll(testDir, 0750)
+	_ = os.MkdirAll(testDir, 0o750)
 	cfgFile := filepath.Join(testDir, "config.json")
 
 	t.Run("Success", func(t *testing.T) {
@@ -568,7 +569,7 @@ func TestConfig_Load(t *testing.T) {
 				"post_process": {"action": "delete", "archive_path": "` + filepath.ToSlash(testDir) + `"}
 			}
 		}`
-		_ = os.WriteFile(cfgFile, []byte(content), 0644)
+		_ = os.WriteFile(cfgFile, []byte(content), 0o644)
 		cfg, _, err := LoadConfig(cfgFile)
 		if err != nil {
 			t.Fatalf("LoadConfig failed: %v", err)
@@ -586,10 +587,78 @@ func TestConfig_Load(t *testing.T) {
 	})
 
 	t.Run("InvalidJSON", func(t *testing.T) {
-		_ = os.WriteFile(cfgFile, []byte("{bad}"), 0644)
+		_ = os.WriteFile(cfgFile, []byte("{bad}"), 0o644)
 		_, _, err := LoadConfig(cfgFile)
 		if err == nil {
 			t.Error("expected error")
+		}
+	})
+}
+
+func TestConfigScaleSettings(t *testing.T) {
+	testDir := getTestDir("ScaleSettings")
+	_ = os.MkdirAll(testDir, 0o750)
+
+	t.Run("SaneDefaults", func(t *testing.T) {
+		cfg := &Config{
+			Poll:      PollConfig{Directory: testDir, Algorithm: PollInterval},
+			Integrity: IntegrityConfig{Algorithm: IntegritySize},
+			Action: ActionConfig{
+				Type: ActionSFTP,
+				SFTP: SFTPConfig{Host: "h", Username: "u", EncryptedPassword: "p", RemotePath: "/r"},
+				PostProcess: PostProcessConfig{
+					Action:      PostActionDelete,
+					ArchivePath: testDir,
+				},
+			},
+		}
+		setDefaults(cfg)
+		if cfg.Poll.MaxBatchSize != 10000 {
+			t.Errorf("expected MaxBatchSize 10000, got %d", cfg.Poll.MaxBatchSize)
+		}
+		if cfg.Poll.MaxVerificationWorkers <= 0 || cfg.Poll.MaxVerificationWorkers > 64 {
+			t.Errorf("expected MaxVerificationWorkers within (0, 64], got %d", cfg.Poll.MaxVerificationWorkers)
+		}
+		if err := validate(cfg); err != nil {
+			t.Errorf("validation failed: %v", err)
+		}
+	})
+
+	t.Run("InvalidMaxBatchSize", func(t *testing.T) {
+		cfg := &Config{
+			Poll:      PollConfig{Directory: testDir, Algorithm: PollInterval, MaxBatchSize: -1},
+			Integrity: IntegrityConfig{Algorithm: IntegritySize},
+			Action: ActionConfig{
+				Type: ActionSFTP,
+				SFTP: SFTPConfig{Host: "h", Username: "u", EncryptedPassword: "p", RemotePath: "/r"},
+				PostProcess: PostProcessConfig{
+					Action:      PostActionDelete,
+					ArchivePath: testDir,
+				},
+			},
+		}
+		setDefaults(cfg)
+		if err := validate(cfg); err == nil || !strings.Contains(err.Error(), "max_batch_size must be positive") {
+			t.Errorf("expected max_batch_size error, got %v", err)
+		}
+	})
+
+	t.Run("InvalidMaxVerificationWorkers", func(t *testing.T) {
+		cfg := &Config{
+			Poll:      PollConfig{Directory: testDir, Algorithm: PollInterval, MaxVerificationWorkers: -5},
+			Integrity: IntegrityConfig{Algorithm: IntegritySize},
+			Action: ActionConfig{
+				Type: ActionSFTP,
+				SFTP: SFTPConfig{Host: "h", Username: "u", EncryptedPassword: "p", RemotePath: "/r"},
+				PostProcess: PostProcessConfig{
+					Action:      PostActionDelete,
+					ArchivePath: testDir,
+				},
+			},
+		}
+		setDefaults(cfg)
+		if err := validate(cfg); err == nil || !strings.Contains(err.Error(), "max_verification_workers must be positive") {
+			t.Errorf("expected max_verification_workers error, got %v", err)
 		}
 	})
 }

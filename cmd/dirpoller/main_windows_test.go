@@ -16,9 +16,10 @@
 package main
 
 import (
-	"criticalsys.net/dirpoller/internal/config"
 	"fmt"
 	"testing"
+
+	"criticalsys.net/dirpoller/internal/config"
 )
 
 // TestWindowsServiceMocks validates the handleWindowsService orchestration logic using mocks.

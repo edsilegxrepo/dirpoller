@@ -17,6 +17,7 @@ import (
 	"context"
 	"log"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,7 +41,7 @@ type EventPoller struct {
 func NewEventPoller(cfg *config.Config) *EventPoller {
 	return &EventPoller{
 		cfg:   cfg,
-		utils: NewOSUtils(),
+		utils: NewOSUtils(cfg.Poll.MaxBatchSize),
 		newWatcher: func() (Watcher, error) {
 			return newRealWatcher()
 		},
@@ -78,21 +79,39 @@ func (p *EventPoller) Start(ctx context.Context, results chan<- []string) error 
 	cleanupTicker := time.NewTicker(cleanupInterval)
 	defer cleanupTicker.Stop()
 
-	// Perform initial check for existing subfolders
-	if _, err := p.utils.HasSubfolders(p.cfg.Poll.Directory); err != nil {
-		return err
-	}
-
 	// Add the directory to the watcher
 	if err := watcher.Add(p.cfg.Poll.Directory); err != nil {
 		return &ErrWatcherInitialization{Err: err}
 	}
 
-	// Process existing files first
+	// Process existing files first (GetFiles also checks for subfolders)
 	files, err := p.utils.GetFiles(p.cfg.Poll.Directory)
-	if err == nil && len(files) > 0 {
+	if err != nil {
+		return err
+	}
+	if len(files) > 0 {
 		results <- files
 	}
+
+	// Micro-batching/coalescing variables
+	var pendingBatch []string
+	var flushTimer *time.Timer
+	var flushChan <-chan time.Time
+
+	// Safe timer shutdown helper
+	stopTimer := func() {
+		if flushTimer != nil {
+			if !flushTimer.Stop() {
+				select {
+				case <-flushTimer.C:
+				default:
+				}
+			}
+			flushTimer = nil
+			flushChan = nil
+		}
+	}
+	defer stopTimer()
 
 	for {
 		select {
@@ -108,6 +127,19 @@ func (p *EventPoller) Start(ctx context.Context, results chan<- []string) error 
 				}
 			}
 			p.mu.Unlock()
+
+		case <-flushChan:
+			if len(pendingBatch) > 0 {
+				go func(b []string) {
+					select {
+					case results <- b:
+					case <-ctx.Done():
+					}
+				}(pendingBatch)
+				pendingBatch = nil
+			}
+			flushTimer = nil
+			flushChan = nil
 
 		case event, ok := <-watcher.Events():
 			if !ok {
@@ -147,24 +179,53 @@ func (p *EventPoller) Start(ctx context.Context, results chan<- []string) error 
 					p.processed[event.Name] = element
 				}
 
+				var shouldSend bool
 				if lastTime.IsZero() || time.Since(lastTime) > debounceInterval {
-					// Performance: Dispatch in a goroutine to prevent blocking the poller loop
-					go func(name string) {
-						select {
-						case results <- []string{name}:
-						case <-time.After(10 * time.Second):
-							// Log or handle timeout
-						}
-					}(event.Name)
+					shouldSend = true
 				}
 				p.mu.Unlock()
+
+				if shouldSend {
+					pendingBatch = append(pendingBatch, event.Name)
+					if len(pendingBatch) >= p.cfg.Poll.MaxBatchSize {
+						go func(b []string) {
+							select {
+							case results <- b:
+							case <-ctx.Done():
+							}
+						}(pendingBatch)
+						pendingBatch = nil
+						stopTimer()
+					} else if flushTimer == nil {
+						flushTimer = time.NewTimer(50 * time.Millisecond)
+						flushChan = flushTimer.C
+					}
+				}
 			}
 
 		case err, ok := <-watcher.Errors():
 			if !ok {
 				return nil
 			}
-			return &ErrWatcherRuntime{Err: err}
+			errMsg := strings.ToLower(err.Error())
+			isOverflow := strings.Contains(errMsg, "overflow") ||
+				strings.Contains(errMsg, "short buffer") ||
+				strings.Contains(errMsg, "buffer limit") ||
+				strings.Contains(errMsg, "too many open files")
+
+			if isOverflow {
+				log.Printf("Warning: Directory watcher encountered overflow runtime error: %v. Initiating catch-up directory scan...\n", err)
+				files, scanErr := p.utils.GetFiles(p.cfg.Poll.Directory)
+				if scanErr == nil && len(files) > 0 {
+					select {
+					case results <- files:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+			} else {
+				return &ErrWatcherRuntime{Err: err}
+			}
 		}
 	}
 }

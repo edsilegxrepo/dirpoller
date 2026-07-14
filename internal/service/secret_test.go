@@ -14,6 +14,7 @@ package service
 
 import (
 	"context"
+	"criticalsys/secretprotector/pkg/libsecsecrets"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,6 @@ import (
 
 	"criticalsys.net/dirpoller/internal/config"
 	"criticalsys.net/dirpoller/internal/testutils"
-	"criticalsys/secretprotector/pkg/libsecsecrets"
 )
 
 func setupLinuxSecureEnv(t *testing.T, keyPath string) func() {
@@ -32,7 +32,7 @@ func setupLinuxSecureEnv(t *testing.T, keyPath string) func() {
 	goos = "linux"
 	libsecsecrets.OsStat = func(name string) (os.FileInfo, error) {
 		if name == keyPath || strings.HasSuffix(name, filepath.Base(keyPath)) {
-			return &testutils.MockFileInfo{FName: filepath.Base(keyPath), FSize: 64, FMode: 0600}, nil
+			return &testutils.MockFileInfo{FName: filepath.Base(keyPath), FSize: 64, FMode: 0o600}, nil
 		}
 		return os.Stat(name)
 	}
@@ -125,7 +125,7 @@ func TestEngine_SecretDecryption_Linux(t *testing.T) {
 	// Mock security checks and override GOOS to linux
 	defer setupLinuxSecureEnv(t, keyFile)()
 
-	_ = os.WriteFile(keyFile, []byte(masterKeyStr), 0600)
+	_ = os.WriteFile(keyFile, []byte(masterKeyStr), 0o600)
 
 	// Resolve key once to encrypt the password for the test
 	masterKey, _ := libsecsecrets.ResolveKey(context.Background(), masterKeyStr, "", "")

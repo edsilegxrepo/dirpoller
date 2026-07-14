@@ -18,9 +18,7 @@ package service
 
 import (
 	"context"
-	"criticalsys.net/dirpoller/internal/action"
-	"criticalsys.net/dirpoller/internal/config"
-	"criticalsys.net/dirpoller/internal/testutils"
+	"criticalsys/secretprotector/pkg/libsecsecrets"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,7 +26,10 @@ import (
 	"testing"
 	"time"
 
-	"criticalsys/secretprotector/pkg/libsecsecrets"
+	"criticalsys.net/dirpoller/internal/action"
+	"criticalsys.net/dirpoller/internal/config"
+	"criticalsys.net/dirpoller/internal/testutils"
+
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -72,7 +73,7 @@ func TestEngineLifecycle(t *testing.T) {
 
 	// Create a valid master key and encrypted password for the test
 	masterKeyStr, _ := libsecsecrets.GenerateKey()
-	_ = os.WriteFile(keyFile, []byte(masterKeyStr), 0600)
+	_ = os.WriteFile(keyFile, []byte(masterKeyStr), 0o600)
 
 	// Mock security checks for the key file in the test environment
 	// setupLinuxSecureEnv now also sets goos = "linux" internally
@@ -132,7 +133,7 @@ func TestEngineLifecycle(t *testing.T) {
 
 	// Create a test file
 	testFile := filepath.Join(testDir, "test.txt")
-	_ = os.WriteFile(testFile, []byte("test data"), 0644)
+	_ = os.WriteFile(testFile, []byte("test data"), 0o644)
 
 	// Wait for processing
 	time.Sleep(2 * time.Second)
@@ -174,7 +175,7 @@ func TestWindowsServiceExecute(t *testing.T) {
 
 	// Create a valid master key and encrypted password for the test
 	masterKeyStr, _ := libsecsecrets.GenerateKey()
-	_ = os.WriteFile(keyPath, []byte(masterKeyStr), 0600)
+	_ = os.WriteFile(keyPath, []byte(masterKeyStr), 0o600)
 	masterKey, _ := libsecsecrets.ResolveKey(context.Background(), masterKeyStr, "", "")
 	encPass, _ := libsecsecrets.Encrypt(context.Background(), "pass", masterKey)
 	libsecsecrets.ZeroBuffer(masterKey)
@@ -195,7 +196,7 @@ func TestWindowsServiceExecute(t *testing.T) {
 				"remote_path": "/test"
 			} 
 		}
-	}`), 0644)
+	}`), 0o644)
 
 	// Mock environment variable for Windows
 	_ = os.Setenv("SECRETPROTECTOR_KEY", masterKeyStr)
@@ -374,7 +375,7 @@ func TestEngineGetFileInfoError(t *testing.T) {
 	t.Run("HashFailure", func(t *testing.T) {
 		// Create a directory instead of a file to trigger hash calculation failure
 		dirPath := filepath.Join(testDir, "hash_fail_dir")
-		_ = os.MkdirAll(dirPath, 0750)
+		_ = os.MkdirAll(dirPath, 0o750)
 
 		info := e.getFileInfo(dirPath, "dir error")
 		if info.Hash != "" {
@@ -437,12 +438,12 @@ func TestEngineActionFailure(t *testing.T) {
 	testDir := getTestDir("EngineActionFail")
 	testFile := filepath.Join(testDir, "fail.txt")
 	keyFile := filepath.Join(testDir, "master.key")
-	_ = os.WriteFile(testFile, []byte("data"), 0644)
+	_ = os.WriteFile(testFile, []byte("data"), 0o644)
 
 	// Mock security checks
 	defer setupLinuxSecureEnv(t, keyFile)()
 	masterKeyStr, _ := libsecsecrets.GenerateKey()
-	_ = os.WriteFile(keyFile, []byte(masterKeyStr), 0600)
+	_ = os.WriteFile(keyFile, []byte(masterKeyStr), 0o600)
 
 	masterKey, _ := libsecsecrets.ResolveKey(context.Background(), masterKeyStr, "", "")
 	encPass, _ := libsecsecrets.Encrypt(context.Background(), "p", masterKey)
@@ -480,12 +481,12 @@ func TestEnginePostProcessFailure(t *testing.T) {
 	testDir := getTestDir("EnginePostFail")
 	testFile := filepath.Join(testDir, "post_fail.txt")
 	keyFile := filepath.Join(testDir, "master.key")
-	_ = os.WriteFile(testFile, []byte("data"), 0644)
+	_ = os.WriteFile(testFile, []byte("data"), 0o644)
 
 	// Mock security checks
 	defer setupLinuxSecureEnv(t, keyFile)()
 	masterKeyStr, _ := libsecsecrets.GenerateKey()
-	_ = os.WriteFile(keyFile, []byte(masterKeyStr), 0600)
+	_ = os.WriteFile(keyFile, []byte(masterKeyStr), 0o600)
 
 	cfg := &config.Config{
 		Poll:      config.PollConfig{Directory: testDir, Algorithm: config.PollInterval, Value: 1},
@@ -513,7 +514,7 @@ func TestEnginePostProcessFailure(t *testing.T) {
 	e.handler = mock
 
 	// Trigger processing. Post-processing should fail because we'll make the archive path a file.
-	_ = os.WriteFile(cfg.Action.PostProcess.ArchivePath, []byte("i am a file"), 0644)
+	_ = os.WriteFile(cfg.Action.PostProcess.ArchivePath, []byte("i am a file"), 0o644)
 
 	e.processFiles(context.Background(), []string{testFile})
 }
@@ -559,12 +560,12 @@ func TestEngineVerifyFailure(t *testing.T) {
 	testDir := getTestDir("EngineVerifyFail")
 	testFile := filepath.Join(testDir, "verify_fail.txt")
 	keyFile := filepath.Join(testDir, "master.key")
-	_ = os.WriteFile(testFile, []byte("data"), 0644)
+	_ = os.WriteFile(testFile, []byte("data"), 0o644)
 
 	// Mock security checks
 	defer setupLinuxSecureEnv(t, keyFile)()
 	masterKeyStr, _ := libsecsecrets.GenerateKey()
-	_ = os.WriteFile(keyFile, []byte(masterKeyStr), 0600)
+	_ = os.WriteFile(keyFile, []byte(masterKeyStr), 0o600)
 
 	masterKey, _ := libsecsecrets.ResolveKey(context.Background(), masterKeyStr, "", "")
 	encPass, _ := libsecsecrets.Encrypt(context.Background(), "p", masterKey)
@@ -647,7 +648,7 @@ func TestWindowsServiceControlRequests(t *testing.T) {
 
 	// Create a valid master key and encrypted password for the test
 	masterKeyStr, _ := libsecsecrets.GenerateKey()
-	_ = os.WriteFile(keyPath, []byte(masterKeyStr), 0600)
+	_ = os.WriteFile(keyPath, []byte(masterKeyStr), 0o600)
 	masterKey, _ := libsecsecrets.ResolveKey(context.Background(), masterKeyStr, "", "")
 	encPass, _ := libsecsecrets.Encrypt(context.Background(), "p", masterKey)
 	libsecsecrets.ZeroBuffer(masterKey)
@@ -667,7 +668,7 @@ func TestWindowsServiceControlRequests(t *testing.T) {
 				"remote_path": "/test"
 			} 
 		}
-	}`), 0644)
+	}`), 0o644)
 
 	// Mock environment variable for Windows
 	_ = os.Setenv("SECRETPROTECTOR_KEY", masterKeyStr)
@@ -765,7 +766,7 @@ func TestEngineAdditionalCoverage(t *testing.T) {
 		types := []config.ActionType{config.ActionSFTP, config.ActionScript}
 		keyFile := filepath.Join(testDir, "all_actions.key")
 		masterKeyStr, _ := libsecsecrets.GenerateKey()
-		_ = os.WriteFile(keyFile, []byte(masterKeyStr), 0600)
+		_ = os.WriteFile(keyFile, []byte(masterKeyStr), 0o600)
 
 		defer setupWinSecureEnv(t)()
 
@@ -924,11 +925,13 @@ func (m *mockEventLogger) Error(id uint32, msg string) error {
 	m.lastMsg = msg
 	return m.errorErr
 }
+
 func (m *mockEventLogger) Info(id uint32, msg string) error {
 	m.lastId = id
 	m.lastMsg = msg
 	return m.infoErr
 }
+
 func (m *mockEventLogger) Close() error {
 	return m.closeErr
 }
@@ -1234,12 +1237,12 @@ func (p *errorPoller) Start(ctx context.Context, results chan<- []string) error 
 func TestEngineContextCancelled(t *testing.T) {
 	testDir := getTestDir("EngineCancel")
 	keyFile := filepath.Join(testDir, "master.key")
-	_ = os.MkdirAll(testDir, 0755)
+	_ = os.MkdirAll(testDir, 0o755)
 
 	// Mock security checks
 	defer setupLinuxSecureEnv(t, keyFile)()
 	masterKeyStr, _ := libsecsecrets.GenerateKey()
-	_ = os.WriteFile(keyFile, []byte(masterKeyStr), 0600)
+	_ = os.WriteFile(keyFile, []byte(masterKeyStr), 0o600)
 
 	masterKey, _ := libsecsecrets.ResolveKey(context.Background(), masterKeyStr, "", "")
 	encPass, _ := libsecsecrets.Encrypt(context.Background(), "p", masterKey)
@@ -1300,7 +1303,7 @@ func (m *mockActivityLogger) LogExecution(summary ExecutionSummary) error {
 func TestEngine_ProcessFiles_TableDriven(t *testing.T) {
 	testDir := getTestDir("EngineProcessTable")
 	f1 := filepath.Join(testDir, "f1.txt")
-	_ = os.WriteFile(f1, []byte("data"), 0644)
+	_ = os.WriteFile(f1, []byte("data"), 0o644)
 
 	tests := []struct {
 		name            string
@@ -1476,7 +1479,7 @@ func TestEngine_ScheduledTasks_Resilience_Extra(t *testing.T) {
 		e.handler = mockH
 
 		f1 := filepath.Join(testDir, "test.txt")
-		_ = os.WriteFile(f1, []byte("data"), 0644)
+		_ = os.WriteFile(f1, []byte("data"), 0o644)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
@@ -1499,7 +1502,7 @@ func TestEngine_ScheduledTasks_Resilience_Extra(t *testing.T) {
 		mockH := &mockActionHandler{processed: []string{f1}}
 		e.handler = mockH
 
-		_ = os.WriteFile(f1, []byte("data"), 0644)
+		_ = os.WriteFile(f1, []byte("data"), 0o644)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
@@ -1726,7 +1729,7 @@ func TestWindowsService_Execute_ControlRequests(t *testing.T) {
 		"poll": { "directory": "`+filepath.ToSlash(testDir)+`", "algorithm": "interval", "value": 1 },
 		"integrity": { "attempts": 1, "interval": 1, "algorithm": "size" },
 		"action": { "type": "script", "script": { "path": "C:\\Windows\\System32\\cmd.exe" }, "post_process": { "action": "delete", "archive_path": "C:\\Temp\\archive" } }
-	}`), 0644)
+	}`), 0o644)
 
 	ws := &WindowsService{cfgPath: cfgPath}
 	r := make(chan svc.ChangeRequest)

@@ -18,12 +18,12 @@ package action
 
 import (
 	"context"
+	"criticalsys/secretprotector/pkg/libsecsecrets"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"criticalsys.net/dirpoller/internal/config"
-	"criticalsys/secretprotector/pkg/libsecsecrets"
 )
 
 type linuxKeyResolver struct{}
