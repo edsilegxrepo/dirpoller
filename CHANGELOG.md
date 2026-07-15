@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-07-15
+
+### Added
+- **I/O Throttling Semaphore**: Introduced a 64-capacity active I/O semaphore inside the file verifier (`internal/integrity`) to restrict concurrent file descriptor accesses. This protects systems from file descriptor exhaustion (`too many open files` errors) and excessive disk contention under massive concurrent loads.
+
+### Changed
+- **Concurrent Sleep Verification**: Refactored the file verification lifecycle to execute verification sleeps (stability checks) in parallel using goroutines. Spawning $N$ concurrent subroutines reduces the verification phase of 5,000 files from 10.4 minutes to exactly the sleep interval (e.g., 1 second) on both Windows and Linux.
+- **Sane Configuration Defaults**: Lowered default `max_batch_size` from `10000` to `1000` and default `attempts` from `3` to `1` to prevent out-of-the-box system resource exhaustion.
+- **MaxBatchSize Bounds Validation**: Enforced strict configuration limits on `max_batch_size`, requiring it to be between `100` and `10000` inclusive.
+
+### Fixed
+- **Integration Test Portability**: Eliminated hardcoded absolute paths to `sftpgo.exe` in integration tests, adding dynamic PATH discovery, environment variable overrides (`SFTPGO_PATH`), and configurable port binding (`SFTPGO_PORT`) to avoid local port conflicts.
+
 ## [1.0.0] - 2026-07-14
 
 ### Added

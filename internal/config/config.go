@@ -205,7 +205,7 @@ func setDefaults(cfg *Config) {
 		cfg.Poll.BatchTimeoutSeconds = 600 // 10 minutes default
 	}
 	if cfg.Poll.MaxBatchSize == 0 {
-		cfg.Poll.MaxBatchSize = 10000 // 10k default limit
+		cfg.Poll.MaxBatchSize = 1000 // 1k default limit
 	}
 	if cfg.GCPercent == 0 {
 		cfg.GCPercent = 100 // default Go GC percent
@@ -221,7 +221,7 @@ func setDefaults(cfg *Config) {
 		cfg.Integrity.Algorithm = IntegrityTimestamp
 	}
 	if cfg.Integrity.VerificationAttempts == 0 {
-		cfg.Integrity.VerificationAttempts = 3
+		cfg.Integrity.VerificationAttempts = 1
 	}
 	if cfg.Integrity.VerificationInterval == 0 {
 		cfg.Integrity.VerificationInterval = 5
@@ -259,8 +259,8 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("poll directory must be an absolute path: %s", cfg.Poll.Directory)
 	}
 
-	if cfg.Poll.MaxBatchSize < 0 {
-		return fmt.Errorf("max_batch_size must be positive")
+	if cfg.Poll.MaxBatchSize != 0 && (cfg.Poll.MaxBatchSize < 100 || cfg.Poll.MaxBatchSize > 10000) {
+		return fmt.Errorf("max_batch_size must be between 100 and 10000 inclusive: got %d", cfg.Poll.MaxBatchSize)
 	}
 	if cfg.Poll.MaxVerificationWorkers < 0 {
 		return fmt.Errorf("max_verification_workers must be positive")

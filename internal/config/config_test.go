@@ -527,7 +527,7 @@ func TestConfig_Defaults_All(t *testing.T) {
 	if cfg.Integrity.Algorithm != IntegrityTimestamp {
 		t.Errorf("Integrity algo default: %s", cfg.Integrity.Algorithm)
 	}
-	if cfg.Integrity.VerificationAttempts != 3 {
+	if cfg.Integrity.VerificationAttempts != 1 {
 		t.Errorf("Attempts default: %d", cfg.Integrity.VerificationAttempts)
 	}
 	if cfg.Integrity.VerificationInterval != 5 {
@@ -613,8 +613,8 @@ func TestConfigScaleSettings(t *testing.T) {
 			},
 		}
 		setDefaults(cfg)
-		if cfg.Poll.MaxBatchSize != 10000 {
-			t.Errorf("expected MaxBatchSize 10000, got %d", cfg.Poll.MaxBatchSize)
+		if cfg.Poll.MaxBatchSize != 1000 {
+			t.Errorf("expected MaxBatchSize 1000, got %d", cfg.Poll.MaxBatchSize)
 		}
 		if cfg.Poll.MaxVerificationWorkers <= 0 || cfg.Poll.MaxVerificationWorkers > 64 {
 			t.Errorf("expected MaxVerificationWorkers within (0, 64], got %d", cfg.Poll.MaxVerificationWorkers)
@@ -626,7 +626,7 @@ func TestConfigScaleSettings(t *testing.T) {
 
 	t.Run("InvalidMaxBatchSize", func(t *testing.T) {
 		cfg := &Config{
-			Poll:      PollConfig{Directory: testDir, Algorithm: PollInterval, MaxBatchSize: -1},
+			Poll:      PollConfig{Directory: testDir, Algorithm: PollInterval, MaxBatchSize: 50},
 			Integrity: IntegrityConfig{Algorithm: IntegritySize},
 			Action: ActionConfig{
 				Type: ActionSFTP,
@@ -638,8 +638,14 @@ func TestConfigScaleSettings(t *testing.T) {
 			},
 		}
 		setDefaults(cfg)
-		if err := validate(cfg); err == nil || !strings.Contains(err.Error(), "max_batch_size must be positive") {
-			t.Errorf("expected max_batch_size error, got %v", err)
+		cfg.Poll.MaxBatchSize = 50
+		if err := validate(cfg); err == nil || !strings.Contains(err.Error(), "max_batch_size must be between 100 and 10000") {
+			t.Errorf("expected max_batch_size error for 50, got %v", err)
+		}
+
+		cfg.Poll.MaxBatchSize = 20000
+		if err := validate(cfg); err == nil || !strings.Contains(err.Error(), "max_batch_size must be between 100 and 10000") {
+			t.Errorf("expected max_batch_size error for 20000, got %v", err)
 		}
 	})
 

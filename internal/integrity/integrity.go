@@ -50,6 +50,7 @@ type Verifier struct {
 	mu     sync.Mutex
 	hashes map[string]string
 	sizes  map[string]int64
+	ioSem  chan struct{} // Semaphore to throttle concurrent disk/network I/O
 }
 
 // NewVerifier creates a new integrity verifier instance.
@@ -59,6 +60,7 @@ func NewVerifier(cfg *config.Config) *Verifier {
 		utils:  poller.NewOSUtils(0), // No limit needed for lock/stat checks on individual paths
 		hashes: make(map[string]string),
 		sizes:  make(map[string]int64),
+		ioSem:  make(chan struct{}, 64), // Limit concurrent file descriptor/disk operations to 64
 	}
 }
 
@@ -73,8 +75,14 @@ func NewVerifier(cfg *config.Config) *Verifier {
 //  5. Success: Returns true if the property is stable across all configured VerificationAttempts.
 func (v *Verifier) Verify(ctx context.Context, path string) (bool, error) {
 	for i := 0; i < v.cfg.Integrity.VerificationAttempts; i++ {
-		// 1. Check Windows lock first
+		// Acquire I/O slot (with context cancellation check)
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case v.ioSem <- struct{}{}:
+		}
 		locked, err := v.utils.IsLocked(path)
+		<-v.ioSem
 		if err != nil {
 			return false, fmt.Errorf("[Integrity:Verify] failed to check lock for %s: %w", path, err)
 		}
@@ -82,21 +90,33 @@ func (v *Verifier) Verify(ctx context.Context, path string) (bool, error) {
 			return false, nil // File is locked, retry later
 		}
 
-		// 2. Perform integrity check based on algorithm
+		// Acquire I/O slot
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case v.ioSem <- struct{}{}:
+		}
 		currentValue, err := v.getIntegrityValue(path)
+		<-v.ioSem
 		if err != nil {
 			return false, err
 		}
 
-		// Wait for the configured interval
+		// Wait for the configured interval (sleep is executed outside the I/O semaphore)
 		select {
 		case <-ctx.Done():
 			return false, ctx.Err()
 		case <-time.After(time.Duration(v.cfg.Integrity.VerificationInterval) * time.Second):
 		}
 
-		// Re-verify after interval
+		// Acquire I/O slot
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case v.ioSem <- struct{}{}:
+		}
 		newValue, err := v.getIntegrityValue(path)
+		<-v.ioSem
 		if err != nil {
 			return false, err
 		}
@@ -152,6 +172,10 @@ func (v *Verifier) calculateHash(path string) (string, error) {
 		return val, nil
 	}
 	v.mu.Unlock()
+
+	// Acquire I/O slot for disk read
+	v.ioSem <- struct{}{}
+	defer func() { <-v.ioSem }()
 
 	f, err := os.Open(filepath.Clean(path)) // #nosec G304
 	if err != nil {

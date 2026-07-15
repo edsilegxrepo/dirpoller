@@ -38,8 +38,9 @@ This section provides a comprehensive reference for all configuration directives
 | **Poll** | `algorithm` | `poll` | Strategy for discovering files. | `interval` | Supported: `interval`, `batch`, `event`, `trigger`. |
 | **Poll** | `value` | `poll` | Parameter for the chosen algorithm. | `0` | `interval`: seconds (int). `batch`: file count (int). `trigger`: file pattern (string). |
 | **Poll** | `batch_timeout_seconds` | `poll` | Force processing timeout for batch/trigger. | `600` | Applied when algorithm is `batch` or `trigger`. |
+| **Poll** | `max_batch_size` | `poll` | Maximum number of files processed in a single batch. | `1000` | Constraint: must be between `100` and `10000` inclusive. |
 | **Integrity** | `algorithm` | `integrity` | Method to verify file stability. | `timestamp` | Supported: `hash` (XXH3-128), `timestamp`, `size`. |
-| **Integrity** | `attempts` | `integrity` | Number of stability checks. | `3` | Must be a positive integer. |
+| **Integrity** | `attempts` | `integrity` | Number of stability checks. | `1` | Must be a positive integer. |
 | **Integrity** | `interval` | `integrity` | Seconds between stability checks. | `5` | Must be a positive integer. |
 | **Action** | `type` | `action` | The processing engine to execute. | **Required** | Supported: `sftp`, `script`. |
 | **Action** | `concurrent_connections`| `action` | Size of the worker pool for parallel tasks. | `CPU x 2` | Must be a positive integer. |
@@ -155,6 +156,7 @@ Determines how the application discovers files in the target directory.
 | `algorithm` | String | `interval` | The detection method: `interval`, `batch`, `event`, or `trigger`. |
 | `value` | Mix | `0` | **Context-sensitive**: In `interval` mode, this is seconds. In `batch` mode, this is file count. In `trigger` mode, this is a file pattern (string). |
 | `batch_timeout_seconds` | Integer | `600` | Used in `batch` and `trigger` modes. Forces processing if the threshold or trigger is not met within this period. |
+| `max_batch_size` | Integer | `1000` | Limits how many files are processed in a single batch (Must be between `100` and `10000`). |
 
 **Algorithm Details:**
 *   **`interval`**: Performs a full directory scan at fixed time steps. Reliable for all storage types and OS platforms.
@@ -170,7 +172,7 @@ A safety gate that ensures files are fully written and closed by the source proc
 | Property | Type | Default | Logic / Purpose |
 | :--- | :--- | :--- | :--- |
 | `algorithm` | String | `timestamp` | The property to monitor for stability: `hash`, `timestamp`, or `size`. |
-| `attempts` | Integer | `3` | Number of consecutive checks where the property must remain identical for the file to be considered "stable". |
+| `attempts` | Integer | `1` | Number of consecutive checks where the property must remain identical for the file to be considered "stable". |
 | `interval` | Integer | `5` | Seconds to wait between each verification attempt. |
 
 **Verification Flow:**

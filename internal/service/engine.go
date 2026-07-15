@@ -373,52 +373,34 @@ func (e *Engine) processFiles(ctx context.Context, files []string) {
 	var mu sync.Mutex
 
 	// STEP 1: CONCURRENT INTEGRITY VERIFICATION
-	// Limit concurrency to MaxVerificationWorkers using a worker pool
-	workersLimit := 1
-	if e.cfg != nil {
-		workersLimit = e.cfg.Poll.MaxVerificationWorkers
-	}
-	if workersLimit <= 0 {
-		workersLimit = 1
-	}
-	if len(files) < workersLimit {
-		workersLimit = len(files)
-	}
-
-	jobs := make(chan string, len(files))
+	// Verification sleep is platform-independent and runs concurrently for all files.
+	// Disk/Network operations are safely throttled inside the Verifier's semaphore.
 	for _, f := range files {
-		jobs <- f
-	}
-	close(jobs)
-
-	for w := 0; w < workersLimit; w++ {
 		wg.Add(1)
-		go func() {
+		go func(path string) {
 			defer wg.Done()
-			for path := range jobs {
-				// Verifier checks for both Windows file locks and property stability (hash/size/timestamp)
-				ok, err := e.verifier.Verify(ctx, path)
-				if err != nil {
-					poller.ExcludePath(path, 30*time.Second)
-					// Individual file errors go to the Activity Log, not the System Event Log
-					// We use a mutex to safely collect results from multiple goroutines.
-					mu.Lock()
-					summary.Errors = append(summary.Errors, FileProcessInfo{
-						Path:  path,
-						Error: err.Error(),
-					})
-					mu.Unlock()
-					continue
-				}
-				if ok {
-					mu.Lock()
-					verifiedFiles = append(verifiedFiles, path)
-					mu.Unlock()
-				} else {
-					poller.ExcludePath(path, 30*time.Second)
-				}
+
+			ok, err := e.verifier.Verify(ctx, path)
+			if err != nil {
+				poller.ExcludePath(path, 30*time.Second)
+				// Individual file errors go to the Activity Log, not the System Event Log
+				// We use a mutex to safely collect results from multiple goroutines.
+				mu.Lock()
+				summary.Errors = append(summary.Errors, FileProcessInfo{
+					Path:  path,
+					Error: err.Error(),
+				})
+				mu.Unlock()
+				return
 			}
-		}()
+			if ok {
+				mu.Lock()
+				verifiedFiles = append(verifiedFiles, path)
+				mu.Unlock()
+			} else {
+				poller.ExcludePath(path, 30*time.Second)
+			}
+		}(f)
 	}
 
 	wg.Wait()

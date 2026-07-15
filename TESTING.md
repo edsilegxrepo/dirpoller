@@ -127,6 +127,8 @@ To ensure tests do not interfere with source code or production data, all tests 
 | **Service** | `TestEngineResilience` | Verify poller restart after failure. | Engine attempts restart with exponential backoff. |
 | **Service** | `TestEngine_ScheduledTasks_Cleanup` | Verify daily SFTP cleanup. | Cleanup triggered on day change branch. |
 | **Service** | `TestEngine_ProcessFiles_TableDriven` | Verify engine processing logic. | Files processed correctly according to engine rules. |
+| **Service** | `TestLiveSFTPGoIntegration` | Verify single-file upload against a real local SFTPGo server. | Successful connection, decryption, upload, and cleanup. |
+| **Service** | `TestLiveSFTPGo5KIntegration` | Simulate 5,000 files production load with active locking and SLAs. | Verifies, uploads, and archives 5k files under 30s. Locked files skipped and recovered. |
 | **CLI** | `TestMainFlags` | Verify flag parsing and overrides. | All flag combinations and config overrides handled correctly. |
 | **CLI** | `TestMain` | Verify main entry point logic. | Logic bridges correctly to internal run function. |
 | **CLI** | `TestIsAdmin` | Verify administrative check. | Function returns boolean without panicking. |
@@ -205,6 +207,8 @@ To run the high-volume scale and live SFTP integration tests (which are skipped 
 
 - **`TEST_SCALE`**: Set to `"true"` to enable the engine scale performance tests.
 - **`SCALE_LIMIT`**: Set to the desired file count limit for the scale test (e.g., `"10000"` or `"1000000"`).
+- **`TEST_LIVE_SFTP`**: Set to `"true"` to enable the single-file live SFTPGo integration test.
+- **`TEST_LIVE_SFTP_5K`**: Set to `"true"` to enable the 5,000-file realistic production load simulation test.
 - **`TEST_LIVE_SFTP_1M`**: Set to `"true"` to enable the 1,000,000 files live SFTPGo integration test.
 
 #### Windows (PowerShell)
@@ -213,6 +217,10 @@ To run the high-volume scale and live SFTP integration tests (which are skipped 
 $env:TEST_SCALE="true"
 $env:SCALE_LIMIT="10000"
 go test -v -run=TestEngineScalePerformance ./internal/service
+
+# Run the 5k live SFTP integration test (simulates 5,000 files production load with strict SLAs)
+$env:TEST_LIVE_SFTP_5K="true"
+go test -v -run=TestLiveSFTPGo5KIntegration ./internal/service
 
 # Run the 1M live SFTP integration test (requires ~3-4 hours on consumer workstations)
 $env:TEST_SCALE="true"
@@ -225,6 +233,9 @@ go test -v -timeout=4h -run=TestLiveSFTPGo1MIntegration ./internal/service
 ```bash
 # Run the 10k scale benchmark
 TEST_SCALE="true" SCALE_LIMIT="10000" go test -v -run=TestEngineScalePerformance ./internal/service
+
+# Run the 5k live SFTP integration test
+TEST_LIVE_SFTP_5K="true" go test -v -run=TestLiveSFTPGo5KIntegration ./internal/service
 
 # Run the 1M live SFTP integration test
 TEST_SCALE="true" SCALE_LIMIT="10000" TEST_LIVE_SFTP_1M="true" go test -v -timeout=4h -run=TestLiveSFTPGo1MIntegration ./internal/service
