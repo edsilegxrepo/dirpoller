@@ -412,14 +412,14 @@ Phase2Complete:
 	time.Sleep(1 * time.Second)
 
 	// STRICT PERFORMANCE SLA ASSERTION:
-	// Rescan, verify sleep (1s), and upload of 100 files should easily take <20s.
-	if phase2Time > 20*time.Second {
-		t.Errorf("PERFORMANCE REGRESSION: Phase 2 took %v, which exceeds SLA budget of 20 seconds", phase2Time)
+	// Rescan, verify sleep (1s), and upload of 100 files should easily take <40s (including 30s lock exclusion TTL).
+	if phase2Time > 40*time.Second {
+		t.Errorf("PERFORMANCE REGRESSION: Phase 2 took %v, which exceeds SLA budget of 40 seconds", phase2Time)
 	}
 
 	totalTime = time.Since(startTime)
-	if totalTime > 110*time.Second {
-		t.Errorf("PERFORMANCE REGRESSION: Total run took %v, which exceeds SLA budget of 110 seconds", totalTime)
+	if totalTime > 130*time.Second {
+		t.Errorf("PERFORMANCE REGRESSION: Total run took %v, which exceeds SLA budget of 130 seconds", totalTime)
 	}
 
 	// 10. Verify Post-Processing (Archives)

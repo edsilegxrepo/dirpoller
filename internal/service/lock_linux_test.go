@@ -12,7 +12,7 @@ import (
 )
 
 func lockFileExclusively(path string) (io.Closer, error) {
-	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_RDWR, 0666)
+	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_RDWR, 0o666)
 	if err != nil {
 		return nil, err
 	}

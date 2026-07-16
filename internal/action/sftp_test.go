@@ -111,6 +111,9 @@ func TestSFTPHandler_Execute_Comprehensive(t *testing.T) {
 		if len(files) != 1 || files[0] != f1 {
 			t.Errorf("expected [f1], got %v", files)
 		}
+		if !mFile.ReadFromCalled {
+			t.Error("expected ReadFrom to be called on mock file (proving high-speed SFTP concurrent write path was selected)")
+		}
 	})
 
 	t.Run("SecretDecryption_Fail", func(t *testing.T) {

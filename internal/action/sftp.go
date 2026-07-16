@@ -79,6 +79,7 @@ type SFTPClient interface {
 type SFTPFile interface {
 	io.Writer
 	io.Closer
+	io.ReaderFrom
 }
 
 // SSHClient defines the subset of ssh.Client methods used by SFTPHandler.
@@ -685,6 +686,12 @@ func (h *SFTPHandler) uploadFile(client SFTPClient, localPath string) error {
 	bufPtr := bufPool.Get().(*[]byte)
 	defer bufPool.Put(bufPtr)
 	buf := *bufPtr
+	// Diagnostic check to verify ReaderFrom support on the live SFTP connection
+	if _, ok := dst.(io.ReaderFrom); ok {
+		log.Println("[Action:SFTP] DIAGNOSTIC: SFTPFile implements io.ReaderFrom. Pipelined streaming is ACTIVE.")
+	} else {
+		log.Println("[Action:SFTP] DIAGNOSTIC: SFTPFile does NOT implement io.ReaderFrom. Falling back to sequential copy.")
+	}
 	_, err = io.CopyBuffer(dst, src, buf)
 	_ = dst.Close() // Close before rename
 	if err != nil {

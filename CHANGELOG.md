@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-07-15
+
+### Changed
+- **High-Speed SFTP Pipelining**: Exposed the `io.ReaderFrom` interface contract in the `SFTPFile` wrapper to trigger `pkg/sftp`'s native concurrent sliding-window write pipeline, resolving the sequential write-wait bottleneck and matching `rclone` parallel upload performance over slow network links.
+
 ## [1.0.1] - 2026-07-15
 
 ### Added

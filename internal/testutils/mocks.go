@@ -15,6 +15,7 @@ package testutils
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"time"
 )
@@ -37,9 +38,10 @@ func (m *MockFileInfo) Sys() interface{}   { return nil }
 
 // MockSFTPFile implements the SFTPFile interface for testing.
 type MockSFTPFile struct {
-	Buffer   *bytes.Buffer
-	WriteErr error
-	CloseErr error
+	Buffer         *bytes.Buffer
+	WriteErr       error
+	CloseErr       error
+	ReadFromCalled bool
 }
 
 func (m *MockSFTPFile) Write(p []byte) (n int, err error) {
@@ -47,6 +49,14 @@ func (m *MockSFTPFile) Write(p []byte) (n int, err error) {
 		return 0, m.WriteErr
 	}
 	return m.Buffer.Write(p)
+}
+
+func (m *MockSFTPFile) ReadFrom(r io.Reader) (n int64, err error) {
+	m.ReadFromCalled = true
+	if m.WriteErr != nil {
+		return 0, m.WriteErr
+	}
+	return m.Buffer.ReadFrom(r)
 }
 
 func (m *MockSFTPFile) Close() error {
