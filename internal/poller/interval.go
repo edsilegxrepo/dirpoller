@@ -42,9 +42,13 @@ func NewIntervalPoller(cfg *config.Config) *IntervalPoller {
 // 3. Main Loop: Waits for ticker events or context cancellation.
 // 4. Execution: Calls poll() on every ticker tick.
 func (p *IntervalPoller) Start(ctx context.Context, results chan<- []string) error {
-	interval, ok := p.cfg.Poll.Value.(int)
-	if !ok {
-		// Default to 60 seconds if not an int
+	var interval int
+	switch val := p.cfg.Poll.Value.(type) {
+	case int:
+		interval = val
+	case float64:
+		interval = int(val)
+	default:
 		interval = 60
 	}
 	ticker := time.NewTicker(time.Duration(interval) * time.Second)

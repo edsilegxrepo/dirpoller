@@ -916,7 +916,10 @@ func TestBatchPollerInvalidThreshold(t *testing.T) {
 	p := NewBatchPoller(cfg)
 	p.files["test.txt"] = struct{}{}
 	results := make(chan []string, 1)
-	if !p.checkThreshold(results) {
+	p.mu.Lock()
+	ok := p.checkThreshold(context.Background(), results)
+	p.mu.Unlock()
+	if !ok {
 		t.Error("expected checkThreshold true")
 	}
 	batch := <-results
@@ -1100,7 +1103,11 @@ func TestPoller_ChannelTimeouts(t *testing.T) {
 		p := NewBatchPoller(cfg)
 		p.files["f1.txt"] = struct{}{}
 		results := make(chan []string)
-		p.flush(results)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		p.mu.Lock()
+		p.flush(ctx, results)
+		p.mu.Unlock()
 		if len(p.files) != 0 {
 			t.Error("files should be cleared even if send times out")
 		}
@@ -1279,4 +1286,65 @@ func TestEventPoller_WatcherCloseError(t *testing.T) {
 	cancel() // This should trigger watcher.Close()
 	time.Sleep(100 * time.Millisecond)
 	// We just verify it doesn't crash, as the error is logged.
+}
+
+func TestBatchPoller_ResilientFallbackScan(t *testing.T) {
+	testDir := GetTestDir("BatchFallbackScan")
+	// Set threshold of 3 files (Value = 3), batch_timeout_seconds = 1
+	cfg := &config.Config{
+		Poll: config.PollConfig{
+			Directory:           testDir,
+			Algorithm:           "batch",
+			Value:               3,
+			MaxBatchSize:        10,
+			BatchTimeoutSeconds: 1,
+		},
+	}
+	p := NewBatchPoller(cfg)
+
+	// Create 2 files in the folder (below the threshold of 3)
+	f1 := filepath.Join(testDir, "file1.txt")
+	f2 := filepath.Join(testDir, "file2.txt")
+	_ = os.WriteFile(f1, []byte("data1"), 0o600)
+	_ = os.WriteFile(f2, []byte("data2"), 0o600)
+	defer func() {
+		_ = os.Remove(f1)
+		_ = os.Remove(f2)
+	}()
+
+	mw := newMockWatcher()
+	p.newWatcher = func() (Watcher, error) { return mw, nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	results := make(chan []string, 1)
+	go func() {
+		_ = p.Start(ctx, results)
+	}()
+
+	// Wait for the backlogTicker (which runs every 2 seconds) and the batchTimeout (1 second) to fire.
+	// In the old code, since hasBacklog was false, the 2 files would be ignored.
+	// In the new code, the backlog ticker will scan them, add them to p.files, and the timeout will flush them.
+	select {
+	case batch := <-results:
+		if len(batch) != 2 {
+			t.Errorf("expected batch of 2 files, got %d", len(batch))
+		}
+		hasF1 := false
+		hasF2 := false
+		for _, f := range batch {
+			if strings.Contains(f, "file1.txt") {
+				hasF1 = true
+			}
+			if strings.Contains(f, "file2.txt") {
+				hasF2 = true
+			}
+		}
+		if !hasF1 || !hasF2 {
+			t.Errorf("missing expected files in batch: %v", batch)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for fallback scan to process files")
+	}
 }

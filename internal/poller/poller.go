@@ -30,7 +30,32 @@ import (
 var (
 	exclusionMu  sync.RWMutex
 	exclusionMap = make(map[string]time.Time)
+
+	inFlightMu  sync.RWMutex
+	inFlightMap = make(map[string]struct{})
 )
+
+// AddInFlight marks a file path as currently being processed.
+func AddInFlight(path string) {
+	inFlightMu.Lock()
+	defer inFlightMu.Unlock()
+	inFlightMap[path] = struct{}{}
+}
+
+// RemoveInFlight unmarks a file path after processing.
+func RemoveInFlight(path string) {
+	inFlightMu.Lock()
+	defer inFlightMu.Unlock()
+	delete(inFlightMap, path)
+}
+
+// IsInFlight checks if a file path is currently being processed.
+func IsInFlight(path string) bool {
+	inFlightMu.RLock()
+	defer inFlightMu.RUnlock()
+	_, ok := inFlightMap[path]
+	return ok
+}
 
 // ExcludePath adds a file path to the temporary exclusion cache with a TTL.
 func ExcludePath(path string, ttl time.Duration) {

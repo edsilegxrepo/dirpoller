@@ -93,6 +93,9 @@ type Engine struct {
 	// testLastCleanupDay allows overriding the daily task tracker for unit tests
 	testLastCleanupDay int
 
+	lastArchiveCleanupDate string // Tracked as YYYYMMDD to run archive cleanup once per day
+	archiveCleanupMu       sync.Mutex
+
 	consecutivePollerFailures int // Counter for consecutive poller startup failures
 }
 
@@ -365,6 +368,15 @@ func (e *Engine) Run(ctx context.Context) error {
 // 3. Post-Processing: Archive, Delete, or Compress files that were successfully handled.
 // 4. Activity Reporting: Log the results of the entire batch execution to the activity log.
 func (e *Engine) processFiles(ctx context.Context, files []string) {
+	for _, f := range files {
+		poller.AddInFlight(f)
+	}
+	defer func() {
+		for _, f := range files {
+			poller.RemoveInFlight(f)
+		}
+	}()
+
 	summary := ExecutionSummary{
 		StartTime: time.Now(),
 	}
@@ -447,6 +459,11 @@ func (e *Engine) processFiles(ctx context.Context, files []string) {
 		if err := e.customLog.LogExecution(summary); err != nil {
 			e.logError(fmt.Sprintf("[Engine:Logging] Failed to write activity log: %v", err))
 		}
+	}
+
+	// Trigger archive cleanup check if configured
+	if e.cfg != nil && e.cfg.Action.PostProcess.ArchivePath != "" && e.cfg.Action.PostProcess.ArchiveRetention != nil {
+		e.checkAndPurgeArchives()
 	}
 
 	// Clear the verifier cache at the end of the cycle to prevent memory leaks
@@ -542,14 +559,43 @@ func (l *cliLogger) Close() error {
 }
 
 func (e *Engine) Close() {
+	if e.handler != nil {
+		if err := e.handler.Close(); err != nil {
+			e.logError(fmt.Sprintf("Warning: failed to close action handler: %v", err))
+		}
+	}
 	if e.logger != nil {
 		if err := e.logger.Close(); err != nil {
 			log.Printf("Warning: failed to close system logger: %v", err)
 		}
 	}
-	if e.handler != nil {
-		if err := e.handler.Close(); err != nil {
-			e.logError(fmt.Sprintf("Warning: failed to close action handler: %v", err))
-		}
+}
+
+func (e *Engine) checkAndPurgeArchives() {
+	e.archiveCleanupMu.Lock()
+	defer e.archiveCleanupMu.Unlock()
+
+	retention := e.cfg.Action.PostProcess.ArchiveRetention
+	if retention == nil || *retention <= 0 {
+		return
+	}
+
+	today := time.Now().Format("20060102")
+	if e.lastArchiveCleanupDate == today {
+		return
+	}
+
+	dir := e.cfg.Action.PostProcess.ArchivePath
+	cutoff := time.Now().AddDate(0, 0, -*retention)
+
+	// Clean up both files and subdirectories, excluding the internal .staging directory
+	filter := func(entry os.DirEntry) bool {
+		return entry.Name() != ".staging"
+	}
+
+	if err := purgeOldEntries(dir, cutoff, filter); err != nil {
+		e.logError(fmt.Sprintf("[Engine:Archive] Failed to purge old archives: %v", err))
+	} else {
+		e.lastArchiveCleanupDate = today
 	}
 }

@@ -1778,7 +1778,14 @@ func TestWindowsService_Execute_ControlRequests(t *testing.T) {
 
 	// Stop for cleanup
 	r <- svc.ChangeRequest{Cmd: svc.Stop}
-	<-changes // StopPending
+	status := <-changes // StopPending
+	if status.State != svc.StopPending {
+		t.Errorf("expected StopPending, got %v", status.State)
+	}
+	status = <-changes // Stopped
+	if status.State != svc.Stopped {
+		t.Errorf("expected Stopped, got %v", status.State)
+	}
 }
 
 func TestRunService_Coverage(t *testing.T) {

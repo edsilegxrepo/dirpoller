@@ -197,37 +197,20 @@ func (l *CustomLogger) checkAndPurge() {
 // and deletes those whose modification time is older than the retention period.
 func (l *CustomLogger) purgeOldLogs() {
 	dir := filepath.Dir(l.logBaseName)
-	if dir == "." {
-		dir = ""
-	}
-
 	base := filepath.Base(l.logBaseName)
 	ext := filepath.Ext(base)
 	prefix := strings.TrimSuffix(base, ext) + "_"
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-
 	cutoff := time.Now().AddDate(0, 0, -l.retention)
 
-	for _, entry := range entries {
+	filter := func(entry os.DirEntry) bool {
 		if entry.IsDir() {
-			continue
+			return false
 		}
 		name := entry.Name()
-		// Matches either _process_YYYYMMDD or _activity_YYYYMMDD-HHMMSS patterns
-		if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ext) &&
-			(strings.Contains(name, "_process_") || strings.Contains(name, "_activity_")) {
-			info, err := entry.Info()
-			if err != nil {
-				continue
-			}
-			// Delete if modification time is before the cutoff
-			if info.ModTime().Before(cutoff) {
-				_ = os.Remove(filepath.Join(dir, name))
-			}
-		}
+		return strings.HasPrefix(name, prefix) &&
+			strings.HasSuffix(name, ext) &&
+			(strings.Contains(name, "_process_") || strings.Contains(name, "_activity_"))
 	}
+
+	_ = purgeOldEntries(dir, cutoff, filter)
 }

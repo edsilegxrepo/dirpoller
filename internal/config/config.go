@@ -125,8 +125,9 @@ type ActionConfig struct {
 
 // PostProcessConfig contains parameters for the file lifecycle after action execution.
 type PostProcessConfig struct {
-	Action      PostAction `json:"action"`
-	ArchivePath string     `json:"archive_path,omitempty"`
+	Action           PostAction `json:"action"`
+	ArchivePath      string     `json:"archive_path,omitempty"`
+	ArchiveRetention *int       `json:"archive_retention,omitempty"`
 }
 
 // SFTPConfig contains credentials and path information for SFTP transfers.
@@ -135,17 +136,18 @@ type PostProcessConfig struct {
 // The 'Password' field is intentionally excluded from JSON marshaling ('-')
 // and is only populated in memory during active execution after decryption.
 type SFTPConfig struct {
-	Host              string `json:"host"`
-	Port              int    `json:"port"`
-	Username          string `json:"username"`
-	Password          string `json:"-"`                            // Plaintext password NOT stored in JSON
-	EncryptedPassword string `json:"encrypted_password,omitempty"` // #nosec G117 - Base64 encoded encrypted password
-	MasterKeyFile     string `json:"master_key_file"`              // Linux only: defaults to ${HOME}/.secretprotector.key
-	MasterKeyEnv      string `json:"master_key_env"`               // Windows only: defaults to SECRETPROTECTOR_KEY
-	SSHKeyPath        string `json:"ssh_key_path,omitempty"`       // Path to private key
-	SSHKeyPassphrase  string `json:"ssh_key_passphrase,omitempty"` // #nosec G117 - Passphrase to decrypt the private key
-	HostKey           string `json:"host_key,omitempty"`           // Base64 encoded public host key
-	RemotePath        string `json:"remote_path"`
+	Host                string `json:"host"`
+	Port                int    `json:"port"`
+	Username            string `json:"username"`
+	Password            string `json:"-"`                            // Plaintext password NOT stored in JSON
+	EncryptedPassword   string `json:"encrypted_password,omitempty"` // #nosec G117 - Base64 encoded encrypted password
+	MasterKeyFile       string `json:"master_key_file"`              // Linux only: defaults to ${HOME}/.secretprotector.key
+	MasterKeyEnv        string `json:"master_key_env"`               // Windows only: defaults to SECRETPROTECTOR_KEY
+	SSHKeyPath          string `json:"ssh_key_path,omitempty"`       // Path to private key
+	SSHKeyPassphrase    string `json:"ssh_key_passphrase,omitempty"` // #nosec G117 - Passphrase to decrypt the private key
+	HostKey             string `json:"host_key,omitempty"`           // Base64 encoded public host key
+	RemotePath          string `json:"remote_path"`
+	DisableAtomicCommit bool   `json:"disable_atomic_commit,omitempty"`
 }
 
 // ScriptConfig contains parameters for executing external logic.
@@ -233,6 +235,11 @@ func setDefaults(cfg *Config) {
 
 	if cfg.Action.PostProcess.Action == "" {
 		cfg.Action.PostProcess.Action = PostActionDelete
+	}
+
+	if cfg.Action.PostProcess.ArchivePath != "" && cfg.Action.PostProcess.ArchiveRetention == nil {
+		defaultRetention := 7
+		cfg.Action.PostProcess.ArchiveRetention = &defaultRetention
 	}
 
 	if cfg.Action.Type == ActionSFTP && cfg.Action.SFTP.Port == 0 {

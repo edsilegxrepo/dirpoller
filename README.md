@@ -46,6 +46,7 @@ This section provides a comprehensive reference for all configuration directives
 | **Action** | `concurrent_connections`| `action` | Size of the worker pool for parallel tasks. | `CPU x 2` | Must be a positive integer. |
 | **Post-Process** | `action` | `action.post_process`| Lifecycle step after successful action. | `delete` | Supported: `delete`, `move_archive`, `move_compress`. |
 | **Post-Process** | `archive_path` | `action.post_process`| Target path for archive/compress actions. | Optional | Required for all post-actions (`move`, `compress` or `delete`) to host the `.staging` directory. Must be absolute. |
+| **Post-Process** | `archive_retention`| `action.post_process`| Number of days to retain files in `archive_path`.| `7` | Set to `0` to keep archives forever. |
 | **SFTP** | `host` | `action.sftp` | Remote SFTP server hostname/IP. | **Required** | Must be provided if action type is `sftp`. |
 | **SFTP** | `port` | `action.sftp` | Remote SSH/SFTP port. | `22` | Standard SSH port. |
 | **SFTP** | `username` | `action.sftp` | SSH authentication username. | **Required** | Must be provided if action type is `sftp`. |
@@ -56,6 +57,7 @@ This section provides a comprehensive reference for all configuration directives
 | **SFTP** | `ssh_key_passphrase` | `action.sftp` | Passphrase for the private SSH key. | Optional | Used to decrypt the private key if it's encrypted. |
 | **SFTP** | `host_key` | `action.sftp` | Public host key. | Optional | Used for server identity verification. Supports: <br> - **RSA**: `ssh-rsa AAAAB3...` <br> - **ECDSA**: `ecdsa-sha2-nistp256 AAAAE2...` <br> - **ED25519**: `ssh-ed25519 AAAAC3...` <br> - **Raw Base64**: `AAAAC3...` |
 | **SFTP** | `remote_path` | `action.sftp` | Target directory on the SFTP server. | **Required** | Must be an absolute path (starts with `/`). Path traversal forbidden. |
+| **SFTP** | `disable_atomic_commit`| `action.sftp` | Bypass temp staging, remote rename, and stat. | `false` | When true, uploads directly to final destination. Optimizes latency on slow networks. |
 | **Script** | `path` | `action.script` | Path to the local script or binary. | **Required** | Must be an absolute path. Path traversal forbidden. Must exist. |
 | **Script** | `timeout_seconds` | `action.script` | Max execution time per file. | `60` | Script is killed if it exceeds this duration. |
 | **Logging** | `log_name` | `logging[]` | Base absolute path for log files. | **Required** | Must be an absolute path. |
@@ -203,6 +205,14 @@ Defines the primary task to perform on verified files.
 | `ssh_key_passphrase` | String | Optional | The passphrase required to decrypt the private key file (if encrypted). |
 | `host_key` | String | Optional | Public host key for server verification. Supports: <br> - **RSA**: `ssh-rsa AAAAB3...` <br> - **ECDSA**: `ecdsa-sha2-nistp256 AAAAE2...` <br> - **ED25519**: `ssh-ed25519 AAAAC3...` <br> - **Raw Base64**: `AAAAC3...` |
 | `remote_path` | String | **Required** | The target directory on the SFTP server. |
+| `disable_atomic_commit` | Boolean | `false` | When `true`, uploads files directly to the final path, skipping remote Rename and size check. |
+
+> [!NOTE]
+> **High-Latency Link Performance Tuning**:
+> When transferring files over high-latency networks (e.g. WAN connections with 100ms+ round-trip times), the default Atomic Commit Protocol (Stage -> Write -> Close -> Rename -> Stat) creates a bottleneck by executing 5 sequential RTTs per file. 
+> To maximize throughput over such links:
+> 1. Set `"disable_atomic_commit": true` to skip remote Rename and Stat operations, reducing round-trips from 5 to 3.
+> 2. Increase `"concurrent_connections"` in the `action` config to `32` or `64`. Since DirPoller uses an optimized multi-socket connection pool, scaling concurrent threads hiding latency is safe and highly effective.
 
 #### Script Handler (`action.script`)
 | Property | Type | Default | Logic / Purpose |
@@ -422,7 +432,8 @@ sudo ./dirpoller -install -name "dirpoller@hr" -config "/etc/dirpoller/hr.json" 
     "concurrent_connections": 4,
     "post_process": {
       "action": "move_compress",
-      "archive_path": "C:\\Data\\Archive"
+      "archive_path": "C:\\Data\\Archive",
+      "archive_retention": 3
     },
     "sftp": {
       "host": "sftp.internal.net",
@@ -433,7 +444,8 @@ sudo ./dirpoller -install -name "dirpoller@hr" -config "/etc/dirpoller/hr.json" 
       "ssh_key_path": "C:\\ProgramData\\DirPoller\\keys\\id_ed25519",
       "ssh_key_passphrase": "optional-passphrase",
       "host_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINfFSlHZATKjPp9Vwg4l9Ecft2rYqObUItGg1YaYSVWH",
-      "remote_path": "/incoming/raw"
+      "remote_path": "/incoming/raw",
+      "disable_atomic_commit": true
     }
   },
   "logging": [
@@ -464,7 +476,8 @@ sudo ./dirpoller -install -name "dirpoller@hr" -config "/etc/dirpoller/hr.json" 
     "concurrent_connections": 8,
     "post_process": {
       "action": "move_archive",
-      "archive_path": "/opt/dirpoller/archive"
+      "archive_path": "/opt/dirpoller/archive",
+      "archive_retention": 14
     },
     "sftp": {
       "host": "sftp.example.com",
@@ -475,7 +488,8 @@ sudo ./dirpoller -install -name "dirpoller@hr" -config "/etc/dirpoller/hr.json" 
       "ssh_key_path": "/home/dirpoller/.ssh/id_rsa",
       "ssh_key_passphrase": "secure-passphrase",
       "host_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINfFSlHZATKjPp9Vwg4l9Ecft2rYqObUItGg1YaYSVWH",
-      "remote_path": "/remote/upload"
+      "remote_path": "/remote/upload",
+      "disable_atomic_commit": true
     }
   },
   "logging": [

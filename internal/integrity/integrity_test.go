@@ -318,4 +318,68 @@ func TestVerifierVerifyLockError(t *testing.T) {
 	}
 }
 
+func TestVerifier_NestedSemaphoreDeadlockPrevention(t *testing.T) {
+	testDir := getTestDir("NestedSemaphore")
+	testFile := filepath.Join(testDir, "test.txt")
+	_ = os.WriteFile(testFile, []byte("hash data content"), 0o644)
+	defer func() { _ = os.Remove(testFile) }()
+
+	// Set attempts = 1, interval = 0, algorithm = "hash"
+	cfg := &config.Config{
+		Integrity: config.IntegrityConfig{
+			VerificationAttempts: 1,
+			VerificationInterval: 0,
+			Algorithm:            config.IntegrityHash,
+		},
+	}
+	v := NewVerifier(cfg)
+
+	// Artificially restrict semaphore size to 1.
+	// If nested acquisition occurred, calling Verify would deadlock immediately
+	// because the outer Verify holds the single slot, leaving calculateHashRaw blocked.
+	v.ioSem = make(chan struct{}, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	verified, err := v.Verify(ctx, testFile)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !verified {
+		t.Error("expected file to be verified successfully")
+	}
+}
+
+func TestVerifier_ClearCache(t *testing.T) {
+	cfg := &config.Config{
+		Integrity: config.IntegrityConfig{
+			Algorithm: config.IntegritySize,
+		},
+	}
+	v := NewVerifier(cfg)
+
+	// Populate cache maps directly
+	v.mu.Lock()
+	v.hashes["file1.txt"] = "hash1"
+	v.sizes["file1.txt"] = 100
+	v.mu.Unlock()
+
+	// Clear cache
+	v.ClearCache()
+
+	// Assert cache maps are empty
+	v.mu.Lock()
+	hashLen := len(v.hashes)
+	sizeLen := len(v.sizes)
+	v.mu.Unlock()
+
+	if hashLen != 0 {
+		t.Errorf("expected hashes cache to be empty, got size %d", hashLen)
+	}
+	if sizeLen != 0 {
+		t.Errorf("expected sizes cache to be empty, got size %d", sizeLen)
+	}
+}
+
 // [Removed redundant local mocks: mockOSUtils - now using testutils.MockOSUtils]

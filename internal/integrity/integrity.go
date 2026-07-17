@@ -145,7 +145,7 @@ func (v *Verifier) getIntegrityValue(path string) (string, error) {
 	case config.IntegrityTimestamp:
 		return info.ModTime().String(), nil
 	case config.IntegrityHash:
-		return v.calculateHash(path)
+		return v.calculateHashRaw(path)
 	default:
 		return "", fmt.Errorf("[Integrity:Algorithm] unsupported integrity algorithm: %s", v.cfg.Integrity.Algorithm)
 	}
@@ -162,20 +162,19 @@ func (v *Verifier) GetCachedSize(path string) (int64, bool) {
 // CalculateHash calculates the XXH3-128 of a file.
 // This is used for both the stability check algorithm and for logging in the activity report.
 func (v *Verifier) CalculateHash(path string) (string, error) {
-	return v.calculateHash(path)
+	// Acquire I/O slot for public API throttling (not called inside Verify loop)
+	v.ioSem <- struct{}{}
+	defer func() { <-v.ioSem }()
+	return v.calculateHashRaw(path)
 }
 
-func (v *Verifier) calculateHash(path string) (string, error) {
+func (v *Verifier) calculateHashRaw(path string) (string, error) {
 	v.mu.Lock()
 	if val, ok := v.hashes[path]; ok {
 		v.mu.Unlock()
 		return val, nil
 	}
 	v.mu.Unlock()
-
-	// Acquire I/O slot for disk read
-	v.ioSem <- struct{}{}
-	defer func() { <-v.ioSem }()
 
 	f, err := os.Open(filepath.Clean(path)) // #nosec G304
 	if err != nil {

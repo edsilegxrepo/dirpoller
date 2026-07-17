@@ -102,3 +102,66 @@ func TestTriggerPoller(t *testing.T) {
 		t.Errorf("timeout waiting for batch timeout")
 	}
 }
+
+func TestTriggerPoller_BacklogNoTriggerNoPrematureFlush(t *testing.T) {
+	testDir := testutils.GetUniqueTestDir("poller", "TriggerBacklogNoPrematureFlush")
+
+	cfg := &config.Config{
+		Poll: config.PollConfig{
+			Directory:           testDir,
+			Algorithm:           config.PollTrigger,
+			Value:               "ready.txt",
+			MaxBatchSize:        10,
+			BatchTimeoutSeconds: 5,
+		},
+	}
+
+	p := NewTriggerPoller(cfg)
+	results := make(chan []string, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mw := newMockWatcher()
+	p.newWatcher = func() (Watcher, error) { return mw, nil }
+
+	// Write a data file (but NO trigger file!)
+	dataFile := filepath.Join(testDir, "data1.txt")
+	_ = os.WriteFile(dataFile, []byte("data"), 0o644)
+	defer func() { _ = os.Remove(dataFile) }()
+
+	go func() {
+		_ = p.Start(ctx, results)
+	}()
+
+	// Wait for the 2-second backlogTicker to fire.
+	// In the old code, the backlogTicker would immediately flush data1.txt, bypassing the trigger.
+	// In the new code, it must NOT flush since the trigger file is missing.
+	select {
+	case batch := <-results:
+		t.Fatalf("unexpected premature flush of batch: %v", batch)
+	case <-time.After(3 * time.Second):
+		// Success: no premature flush occurred!
+	}
+
+	// Now create the trigger file to prove it flushes correctly once the trigger is present
+	triggerFile := filepath.Join(testDir, "ready.txt")
+	_ = os.WriteFile(triggerFile, []byte("go"), 0o644)
+	defer func() { _ = os.Remove(triggerFile) }()
+
+	// Since we wrote the trigger file, the backlog scan should pick it up and flush
+	select {
+	case batch := <-results:
+		found := false
+		for _, f := range batch {
+			if filepath.Base(f) == "data1.txt" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected to find data1.txt in flushed results, got %v", batch)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for flush after trigger creation")
+	}
+}

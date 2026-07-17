@@ -82,6 +82,7 @@ To ensure tests do not interfere with source code or production data, all tests 
 | **Polling** | `TestBatchPoller` | Verify batch threshold and timeout triggers. | Files sent when count is reached OR after timeout. |
 | **Polling** | `TestBatchPollerTimeout` | Verify timeout trigger for partial batches. | Files sent after timeout even if threshold not met. |
 | **Polling** | `TestBatchPollerSubfolderDetection` | Ensure recursive folders are blocked in batch mode. | Error returned when subfolder is present. |
+| **Polling** | `TestBatchPoller_ResilientFallbackScan` | Verify fallback directory scanning when fsnotify events are dropped/lost. | Directory files are successfully scanned and flushed on timeout. |
 | **Polling** | `TestEventPoller` | Verify real-time `fsnotify` detection. | File creation triggers immediate detection without missing events. |
 | **Polling** | `TestEventPollerDynamicSubfolder` | Verify detection of new subfolders during runtime. | Engine returns error when subfolder created. |
 | **Polling** | `TestEventPoller_LRU_Eviction` | Verify LRU cache eviction in event poller. | Old events are evicted to prevent memory leaks. |
@@ -95,9 +96,12 @@ To ensure tests do not interfere with source code or production data, all tests 
 | **Integrity** | `TestIntegrityTimestamp` | Verify mod-time consistency check. | File verified via timestamp stability algorithm. |
 | **Integrity** | `TestVerifierCalculateHash` | Verify hash calculation logic. | Correct hash returned for test file content. |
 | **Integrity** | `TestVerifierUnsupportedAlgorithm` | Verify handling of unknown algorithms. | Error returned for invalid algorithm config. |
+| **Integrity** | `TestVerifier_NestedSemaphoreDeadlockPrevention` | Verify that nested semaphore acquisitions do not occur to prevent deadlocks. | Hashing verification succeeds using a semaphore of size 1. |
+| **Integrity** | `TestVerifier_ClearCache` | Verify that ClearCache clears integrity maps to prevent memory leaks. | Hashes and sizes maps are emptied. |
 | **Action** | `TestScriptAction` | Verify `.bat` execution and params. | Script runs with exit 0, file marked success. |
 | **Action** | `TestScriptActionTimeout` | Verify script execution timeout. | Context cancellation kills long-running script. |
 | **Action** | `TestScriptActionFailure` | Verify handling of script exit codes. | Error returned when script returns non-zero code. |
+| **Action** | `TestScriptAction_OutputLimiter` | Verify that script output is capped at 64KB to prevent OOM memory exhaustion. | Output is truncated to 64KB on failure. |
 | **Action** | `TestScriptHandler_RemoteCleanup` | Verify remote file cleanup after action. | Source files are removed from remote SFTP server if configured. |
 | **Action** | `TestSFTPHandler_RealMockServer/PasswordAuth` | Verify SFTP with Password authentication. | Successful auth and upload to mock server. |
 | **Action** | `TestSFTPHandler_RealMockServer/KeyAuth` | Verify SFTP with SSH Key authentication. | Successful auth and upload to mock server. |
@@ -108,6 +112,9 @@ To ensure tests do not interfere with source code or production data, all tests 
 | **Action** | `SFTP_HostKey_Validation` | Verify support for all host key formats. | Handshake succeeds for: `ssh-rsa`, `ecdsa-sha2-nistp256`, `ssh-ed25519`, `Raw Base64` |
 | **Action** | `TestSFTPHandler_RealMockServer/HostKeyVerification_Failure` | Verify connection with mismatched Host Key. | Connection rejected with host key mismatch error. |
 | **Action** | `TestSFTPHandler_Execute_Comprehensive` | Verify SFTP upload logic. | Files uploaded successfully or errors handled. |
+| **Action** | `TestSFTPHandler_Execute_Comprehensive/CircuitBreakerThunderingHerd` | Verify thundering herd protection on expired circuit breaker cooldown. | Only 1 concurrent thread probes connection while others are blocked. |
+| **Action** | `TestSFTPHandler_Execute_Comprehensive/DiscardSessionCountSafety` | Verify that active connection telemetry does not underflow on double discards. | activeConns remains 0 and does not drop to negative values. |
+| **Action** | `TestSFTPHandler_UploadFile_DisableAtomicCommit_TransferFail` | Verify direct upload cleanup on transfer failure. | Partially uploaded file is deleted from target server. |
 | **Action** | `TestSFTPHandler_Reconnect_Logic` | Verify reconnection on lost sessions. | Handler reconnects and retries successfully. |
 | **Action** | `TestSFTPHandler_LazyConnectionPruning` | Verify pruning of idle SFTP connections. | Sessions idle > 5 minutes are closed and removed from references. |
 | **Archive** | `TestArchive_Process_Comprehensive` | Verify transactional archiving logic. | Prepare-Commit-Rollback cycle works as intended. |
@@ -120,7 +127,7 @@ To ensure tests do not interfere with source code or production data, all tests 
 | **Service** | `TestInstallRemoveService` | Verify SCM interaction logic (Windows, mocked). | Service created/deleted in mock manager state. |
 | **Service** | `TestInstallServiceErrors` | Verify error handling in service installation (Windows). | Proper errors for existing services or log failures. |
 | **Service** | `TestServiceWindowsCoverage` | Verify service loop and thin wrappers (Windows). | Stop/Pause signals handled, wrappers invoked. |
-| **Service** | `TestWindowsService_Execute_ControlRequests` | Verify SCM control signal handling (Windows). | Interrogate, Pause, and Continue handled correctly. |
+| **Service** | `TestWindowsService_Execute_ControlRequests` | Verify SCM control signal handling and state transitions (Windows). | Interrogate, Pause, Continue, and clean Stop/Stopped transitions verified in order. |
 | **Service** | `TestWindowsServiceExecute` | Verify full service lifecycle (Windows). | Service starts, processes files, and stops gracefully. |
 | **Service** | `TestLinuxInstaller_RootPrivileges` | Verify Linux root enforcement. | Error returned when run without root/sudo. |
 | **Service** | `TestLinuxInstaller_Lifecycle` | Verify Linux template parsing & naming. | Unit parsing and name splitting work correctly. |
@@ -128,7 +135,14 @@ To ensure tests do not interfere with source code or production data, all tests 
 | **Service** | `TestEngine_ScheduledTasks_Cleanup` | Verify daily SFTP cleanup. | Cleanup triggered on day change branch. |
 | **Service** | `TestEngine_ProcessFiles_TableDriven` | Verify engine processing logic. | Files processed correctly according to engine rules. |
 | **Service** | `TestLiveSFTPGoIntegration` | Verify single-file upload against a real local SFTPGo server. | Successful connection, decryption, upload, and cleanup. |
+| **Service** | `TestLiveSFTPGoBatchIntegration` | Verify live batch polling uploads against SFTPGo. | Successful batch detection, upload, and cleanup. |
 | **Service** | `TestLiveSFTPGo5KIntegration` | Simulate 5,000 files production load with active locking and SLAs. | Verifies, uploads, and archives 5k files under 30s. Locked files skipped and recovered. |
+| **Service** | `TestPurgeOldEntries` | Verify the shared `purgeOldEntries` logic with backdated files and subdirectories. | Expired files and directories are deleted while recent ones are retained. |
+| **Service** | `TestEngine_checkAndPurgeArchives` | Verify archive retention threshold calculations, calendar day gating, and preservation of the transaction staging folder. | Engine purges old archives once per calendar day based on configuration, while protecting the internal `.staging` folder from deletion. |
+| **Service** | `TestLiveSFTPGoLongevityAndGoroutineLeak` | Verify goroutine and thread stability under multiple bursts of file activity. | Baseline goroutine counts remain stable without leaks after 10 bursts of writes. |
+| **Service** | `TestLiveSFTPGoConcurrencyAndBackpressure` | Stress-test the engine's event poller backlog fallback scan under high-load concurrent writes. | All 200 files are verified, batched, and uploaded under restricted connection pools without stranding. |
+| **Service** | `TestLiveSFTPGoMidTransferDisconnectAndRecovery` | Verify self-healing circuit breaker recovery after a simulated socket disconnect. | Engine triggers backoff/open-circuit on loss, then auto-recovers uploads once SFTPGo restarts. |
+| **Service** | `TestLiveSFTPGoConstantInfluxAndHandleLeak` | Stream 500 files at high velocity (20 files/100ms) under concurrent verification/action workers. | All files are processed, reaped, and process handle counts remain stable without leaking descriptors. |
 | **CLI** | `TestMainFlags` | Verify flag parsing and overrides. | All flag combinations and config overrides handled correctly. |
 | **CLI** | `TestMain` | Verify main entry point logic. | Logic bridges correctly to internal run function. |
 | **CLI** | `TestIsAdmin` | Verify administrative check. | Function returns boolean without panicking. |

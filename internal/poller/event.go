@@ -28,20 +28,23 @@ import (
 // EventPoller uses Windows-native ReadDirectoryChangesW (via fsnotify) for real-time detection.
 // It is optimized for high-traffic local disks where minimal latency is required.
 type EventPoller struct {
-	cfg        *config.Config
-	utils      OSUtils
-	mu         sync.Mutex
-	newWatcher func() (Watcher, error)
-	processed  map[string]*list.Element
-	lruList    *list.List
-	maxCache   int
+	cfg          *config.Config
+	utils        OSUtils
+	mu           sync.Mutex
+	newWatcher   func() (Watcher, error)
+	processed    map[string]*list.Element
+	lruList      *list.List
+	maxCache     int
+	hasBacklog   bool
+	backlogUtils OSUtils
 }
 
 // NewEventPoller initializes a new EventPoller with real-time detection capabilities.
 func NewEventPoller(cfg *config.Config) *EventPoller {
 	return &EventPoller{
-		cfg:   cfg,
-		utils: NewOSUtils(cfg.Poll.MaxBatchSize),
+		cfg:          cfg,
+		utils:        NewOSUtils(cfg.Poll.MaxBatchSize),
+		backlogUtils: NewOSUtils(0), // Unlimited for backlog scans
 		newWatcher: func() (Watcher, error) {
 			return newRealWatcher()
 		},
@@ -90,7 +93,14 @@ func (p *EventPoller) Start(ctx context.Context, results chan<- []string) error 
 		return err
 	}
 	if len(files) > 0 {
-		results <- files
+		if len(files) >= p.cfg.Poll.MaxBatchSize {
+			p.hasBacklog = true
+		}
+		select {
+		case results <- files:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 
 	// Micro-batching/coalescing variables
@@ -113,6 +123,9 @@ func (p *EventPoller) Start(ctx context.Context, results chan<- []string) error 
 	}
 	defer stopTimer()
 
+	backlogTicker := time.NewTicker(2 * time.Second)
+	defer backlogTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -128,14 +141,50 @@ func (p *EventPoller) Start(ctx context.Context, results chan<- []string) error 
 			}
 			p.mu.Unlock()
 
+		case <-backlogTicker.C:
+			if len(pendingBatch) == 0 {
+				p.mu.Lock()
+				backlogFiles, err := p.backlogUtils.GetFiles(p.cfg.Poll.Directory)
+				p.mu.Unlock()
+				if err == nil && len(backlogFiles) > 0 {
+					var filtered []string
+					for _, f := range backlogFiles {
+						if !IsInFlight(f) {
+							filtered = append(filtered, f)
+							if len(filtered) >= p.cfg.Poll.MaxBatchSize {
+								break
+							}
+						}
+					}
+					if len(filtered) > 0 {
+						select {
+						case results <- filtered:
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+						if len(backlogFiles) >= p.cfg.Poll.MaxBatchSize {
+							p.hasBacklog = true
+						} else {
+							p.hasBacklog = false
+						}
+					} else {
+						p.hasBacklog = false
+					}
+				} else {
+					p.hasBacklog = false
+				}
+			}
+
 		case <-flushChan:
 			if len(pendingBatch) > 0 {
-				go func(b []string) {
-					select {
-					case results <- b:
-					case <-ctx.Done():
-					}
-				}(pendingBatch)
+				select {
+				case results <- pendingBatch:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				if len(pendingBatch) >= p.cfg.Poll.MaxBatchSize {
+					p.hasBacklog = true
+				}
 				pendingBatch = nil
 			}
 			flushTimer = nil
@@ -188,12 +237,12 @@ func (p *EventPoller) Start(ctx context.Context, results chan<- []string) error 
 				if shouldSend {
 					pendingBatch = append(pendingBatch, event.Name)
 					if len(pendingBatch) >= p.cfg.Poll.MaxBatchSize {
-						go func(b []string) {
-							select {
-							case results <- b:
-							case <-ctx.Done():
-							}
-						}(pendingBatch)
+						select {
+						case results <- pendingBatch:
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+						p.hasBacklog = true
 						pendingBatch = nil
 						stopTimer()
 					} else if flushTimer == nil {
@@ -217,6 +266,9 @@ func (p *EventPoller) Start(ctx context.Context, results chan<- []string) error 
 				log.Printf("Warning: Directory watcher encountered overflow runtime error: %v. Initiating catch-up directory scan...\n", err)
 				files, scanErr := p.utils.GetFiles(p.cfg.Poll.Directory)
 				if scanErr == nil && len(files) > 0 {
+					if len(files) >= p.cfg.Poll.MaxBatchSize {
+						p.hasBacklog = true
+					}
 					select {
 					case results <- files:
 					case <-ctx.Done():

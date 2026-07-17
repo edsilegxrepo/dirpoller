@@ -83,6 +83,7 @@ loop:
 				time.Sleep(100 * time.Millisecond)
 				changes <- c.CurrentStatus
 			case svc.Stop, svc.Shutdown:
+				changes <- svc.Status{State: svc.StopPending}
 				cancel()
 				// We don't break loop here, we wait for errChan to return from engine.Run
 			case svc.Pause:
@@ -100,7 +101,8 @@ loop:
 			break loop
 		}
 	}
-	changes <- svc.Status{State: svc.StopPending}
+	changes <- svc.Status{State: svc.Stopped}
+	time.Sleep(100 * time.Millisecond) // Allow SCM to process the Stopped state before process exits
 	return
 }
 

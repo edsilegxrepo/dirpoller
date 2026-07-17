@@ -21,6 +21,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -140,6 +142,62 @@ func TestSFTPHandler_Execute_Comprehensive(t *testing.T) {
 		}
 	})
 
+	t.Run("CircuitBreakerThunderingHerd", func(t *testing.T) {
+		h := NewSFTPHandler(cfg)
+		h.consecutiveFail = circuitBreakerThreshold
+		// Cooldown is expired
+		h.lastFailureTime = time.Now().Add(-10 * time.Second)
+		h.dialer = &mockDialerAdapter{&testutils.MockDialer{Err: fmt.Errorf("probe failed")}}
+
+		// Launch 10 concurrent requests to probe the server
+		var wg sync.WaitGroup
+		var blockedCount int64
+		var probeAttempts int64
+
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, err := h.Execute(context.Background(), []string{f1})
+				if err != nil {
+					if strings.Contains(err.Error(), "circuit breaker active") {
+						atomic.AddInt64(&blockedCount, 1)
+					} else if strings.Contains(err.Error(), "probe failed") {
+						atomic.AddInt64(&probeAttempts, 1)
+					}
+				}
+			}()
+		}
+		wg.Wait()
+
+		// Only exactly 1 request should have been allowed to probe. The other 9 should have been blocked.
+		if probeAttempts != 1 {
+			t.Errorf("expected exactly 1 probe attempt, got %d", probeAttempts)
+		}
+		if blockedCount != 9 {
+			t.Errorf("expected exactly 9 requests to be blocked by active breaker, got %d", blockedCount)
+		}
+	})
+
+	t.Run("DiscardSessionCountSafety", func(t *testing.T) {
+		h := NewSFTPHandler(cfg)
+		h.activeConns = 1
+		sess := &sftpSession{client: nil, conn: nil}
+		h.allSessions = append(h.allSessions, sess)
+
+		// First discard: finds the session and decrements activeConns to 0
+		h.discardSession(sess)
+		if h.activeConns != 0 {
+			t.Errorf("expected activeConns to be 0, got %d", h.activeConns)
+		}
+
+		// Second discard (simulate race/double-teardown): session is not found, count must remain 0
+		h.discardSession(sess)
+		if h.activeConns != 0 {
+			t.Errorf("expected activeConns to remain 0, got %d", h.activeConns)
+		}
+	})
+
 	t.Run("GetOrCreateClientFail", func(t *testing.T) {
 		h := NewSFTPHandler(cfg)
 		h.dialer = &mockDialerAdapter{&testutils.MockDialer{Err: fmt.Errorf("dial error")}}
@@ -228,6 +286,37 @@ func TestSFTPHandler_Execute_Comprehensive(t *testing.T) {
 		}
 		if len(success) != 0 {
 			t.Errorf("expected 0 success, got %d", len(success))
+		}
+	})
+
+	t.Run("DisableAtomicCommit_Success", func(t *testing.T) {
+		cfgDirect := &config.Config{
+			Action: config.ActionConfig{
+				ConcurrentConnections: 1,
+				SFTP: config.SFTPConfig{
+					Host:                "localhost",
+					RemotePath:          "/remote",
+					DisableAtomicCommit: true,
+				},
+			},
+		}
+		mFile := &testutils.MockSFTPFile{Buffer: new(bytes.Buffer)}
+		mSFTP := &testutils.MockSFTPClient{CreatedFile: mFile}
+		mSSH := &testutils.MockSSHClient{}
+		mDialer := &mockDialerAdapter{&testutils.MockDialer{Client: mSFTP, Conn: mSSH}}
+
+		h := NewSFTPHandler(cfgDirect)
+		h.dialer = mDialer
+
+		files, err := h.Execute(context.Background(), []string{f1})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if len(files) != 1 || files[0] != f1 {
+			t.Errorf("expected [f1], got %v", files)
+		}
+		if !mFile.ReadFromCalled {
+			t.Error("expected ReadFrom to be called on mock file")
 		}
 	})
 }
@@ -512,6 +601,31 @@ func TestSFTPHandler_UploadFile_TransferFail(t *testing.T) {
 	err := h.uploadFile(&mockSFTPClientAdapter{mSFTP}, f1)
 	if err == nil || !strings.Contains(err.Error(), "failed to transfer data") {
 		t.Errorf("expected transfer error, got %v", err)
+	}
+}
+
+func TestSFTPHandler_UploadFile_DisableAtomicCommit_TransferFail(t *testing.T) {
+	testDir := getActionTestDir("SFTPDirectTransferFail")
+	f1 := filepath.Join(testDir, "f1.txt")
+	_ = os.WriteFile(f1, []byte("data"), 0o644)
+
+	mFile := &testutils.MockSFTPFile{WriteErr: fmt.Errorf("write fail")}
+	mSFTP := &testutils.MockSFTPClient{CreatedFile: mFile}
+	cfg := &config.Config{
+		Action: config.ActionConfig{
+			SFTP: config.SFTPConfig{
+				DisableAtomicCommit: true,
+			},
+		},
+	}
+	h := NewSFTPHandler(cfg)
+	err := h.uploadFile(&mockSFTPClientAdapter{mSFTP}, f1)
+	if err == nil || !strings.Contains(err.Error(), "failed to transfer data") {
+		t.Errorf("expected transfer error, got %v", err)
+	}
+	// Verify that the file was removed from the server
+	if len(mSFTP.RemovedPaths) != 1 || !strings.Contains(mSFTP.RemovedPaths[0], "f1.txt") {
+		t.Errorf("expected Remove to be called for direct upload failure, got %v", mSFTP.RemovedPaths)
 	}
 }
 

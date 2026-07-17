@@ -15,9 +15,11 @@
 package action
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"sync"
@@ -144,10 +146,34 @@ func (h *ScriptHandler) executeScript(ctx context.Context, file string) error {
 	// nosemgrep
 	cmd := exec.CommandContext(childCtx, h.cfg.Action.Script.Path, absFile)
 
-	output, err := cmd.CombinedOutput()
+	var outputBuf bytes.Buffer
+	// Limit total captured stdout/stderr memory to 64KB per script run
+	limitWriter := &maxBytesWriter{w: &outputBuf, n: 64 * 1024}
+	cmd.Stdout = limitWriter
+	cmd.Stderr = limitWriter
+
+	err = cmd.Run()
 	if err != nil {
-		return &ErrExecutionFailed{Path: file, Err: err, Output: string(output)}
+		return &ErrExecutionFailed{Path: file, Err: err, Output: outputBuf.String()}
 	}
 
 	return nil
+}
+
+type maxBytesWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (m *maxBytesWriter) Write(p []byte) (n int, err error) {
+	if m.n <= 0 {
+		return len(p), nil
+	}
+	limit := int64(len(p))
+	if limit > m.n {
+		limit = m.n
+	}
+	n, err = m.w.Write(p[:limit])
+	m.n -= int64(n)
+	return len(p), err
 }

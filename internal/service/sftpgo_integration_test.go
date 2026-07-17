@@ -5,6 +5,7 @@ import (
 	"criticalsys/secretprotector/pkg/libsecsecrets"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,6 +168,200 @@ ExitLoop:
 		t.Fatal("SFTPGo live integration test failed")
 	}
 	t.Log("SFTPGo live integration test passed successfully!")
+}
+
+// TestLiveSFTPGoBatchIntegration verifies end-to-end SFTP uploading using the Batch Poller algorithm.
+// Run this test with:
+//
+//	$env:TEST_LIVE_SFTP="true"; go test -v -run=TestLiveSFTPGoBatchIntegration ./internal/service
+func TestLiveSFTPGoBatchIntegration(t *testing.T) {
+	if os.Getenv("TEST_LIVE_SFTP") != "true" {
+		t.Skip("Skipping live SFTP test. Set TEST_LIVE_SFTP=true to run.")
+	}
+
+	tempDir := os.Getenv("TEMP")
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	timestamp := time.Now().Format("20060102150405")
+	sftpHome := filepath.Join(tempDir, "unitests", "sftpgo_home_batch-"+timestamp)
+	pollDir := filepath.Join(tempDir, "unitests", "poll_dir_batch-"+timestamp)
+	archiveDir := filepath.Join(tempDir, "unitests", "archive_batch-"+timestamp)
+
+	if err := os.MkdirAll(sftpHome, 0o750); err != nil {
+		t.Fatalf("failed to create sftpgo home dir: %v", err)
+	}
+	if err := os.MkdirAll(pollDir, 0o750); err != nil {
+		t.Fatalf("failed to create poll dir: %v", err)
+	}
+	defer func() {
+		_ = fastRemoveAll(sftpHome)
+		_ = fastRemoveAll(pollDir)
+		_ = fastRemoveAll(archiveDir)
+	}()
+
+	// 1. Generate master key and encrypt password
+	masterKeyStr, _ := libsecsecrets.GenerateKey()
+	masterKey, _ := libsecsecrets.ResolveKey(context.Background(), masterKeyStr, "", "")
+	encPass, _ := libsecsecrets.Encrypt(context.Background(), "password123", masterKey)
+	libsecsecrets.ZeroBuffer(masterKey)
+
+	_ = os.Setenv("SECRETPROTECTOR_KEY", masterKeyStr)
+	defer func() { _ = os.Unsetenv("SECRETPROTECTOR_KEY") }()
+
+	// 2. Start SFTPGo portable server
+	sftpgoPath := getSFTPGoPath()
+	port := getSFTPGoPort() + 1
+	cmd := exec.Command(sftpgoPath, "portable",
+		"-d", sftpHome,
+		"-u", "testuser",
+		"-p", "password123",
+		"-s", strconv.Itoa(port),
+		"-g", "*",
+	)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Dir = sftpHome
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start SFTPGo: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+	}()
+
+	// Wait 2 seconds for SFTPGo server to bind
+	time.Sleep(2 * time.Second)
+
+	// 3. Write config to a JSON file to test JSON unmarshaling of numeric Value (float64)
+	jsonConfigPath := filepath.Join(tempDir, "unitests", "config_batch-"+timestamp+".json")
+	jsonConfigData := fmt.Sprintf(`{
+		"poll": {
+			"directory": "%s",
+			"algorithm": "batch",
+			"value": 3,
+			"max_batch_size": 100,
+			"max_verification_workers": 128
+		},
+		"integrity": {
+			"algorithm": "size",
+			"attempts": 1,
+			"interval": 1
+		},
+		"action": {
+			"type": "sftp",
+			"concurrent_connections": 32,
+			"post_process": {
+				"action": "delete",
+				"archive_path": "%s"
+			},
+			"sftp": {
+				"host": "127.0.0.1",
+				"port": %d,
+				"username": "testuser",
+				"encrypted_password": "%s",
+				"master_key_env": "SECRETPROTECTOR_KEY",
+				"remote_path": "/"
+			}
+		}
+	}`, filepath.ToSlash(pollDir), filepath.ToSlash(archiveDir), port, encPass)
+
+	if err := os.WriteFile(jsonConfigPath, []byte(jsonConfigData), 0o600); err != nil {
+		t.Fatalf("failed to write json config file: %v", err)
+	}
+	defer func() { _ = os.Remove(jsonConfigPath) }()
+
+	// 4. Load config using config.LoadConfig to exercise the JSON unmarshaler and type safety checks
+	cfg, _, err := config.LoadConfig(jsonConfigPath)
+	if err != nil {
+		t.Fatalf("failed to load config from json: %v", err)
+	}
+
+	// 5. Create 105 test files to verify BACKLOG DRAINING (since 105 > MaxBatchSize 100)
+	var localFiles []string
+	for i := 1; i <= 105; i++ {
+		filename := fmt.Sprintf("batch_test_%d.txt", i)
+		path := filepath.Join(pollDir, filename)
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("file %d data", i)), 0o600); err != nil {
+			t.Fatalf("failed to write test file %d: %v", i, err)
+		}
+		localFiles = append(localFiles, path)
+	}
+
+	// Give Windows OS a moment to release handles/locks after writing 105 files in a tight loop
+	time.Sleep(1 * time.Second)
+
+	engine, err := NewEngine(cfg, false)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	defer engine.Close()
+
+	// Start Engine
+	ctx, cancel := context.WithCancel(context.Background())
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- engine.Run(ctx)
+	}()
+
+	// 6. Poll and wait for upload success of ALL 105 files
+	timeout := time.After(45 * time.Second)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	success := false
+	for {
+		select {
+		case <-timeout:
+			var missing []int
+			for i := 1; i <= 105; i++ {
+				upFile := filepath.Join(sftpHome, fmt.Sprintf("batch_test_%d.txt", i))
+				if _, err := os.Stat(upFile); err != nil {
+					missing = append(missing, i)
+				}
+			}
+			var remainingLocal []string
+			for _, f := range localFiles {
+				if _, err := os.Stat(f); err == nil {
+					remainingLocal = append(remainingLocal, filepath.Base(f))
+				}
+			}
+			t.Errorf("timeout waiting for files to upload to SFTPGo. Missing on SFTPGo (%d files): %v. Remaining local (%d files): %v", len(missing), missing, len(remainingLocal), remainingLocal)
+			goto ExitLoop
+		case <-ticker.C:
+			// Check if all 105 files arrived at SFTPGo directory and local ones are cleaned up
+			allUploaded := true
+			for i := 1; i <= 105; i++ {
+				upFile := filepath.Join(sftpHome, fmt.Sprintf("batch_test_%d.txt", i))
+				if _, err := os.Stat(upFile); err != nil {
+					allUploaded = false
+					break
+				}
+			}
+			if allUploaded {
+				allLocalDeleted := true
+				for _, f := range localFiles {
+					if _, err := os.Stat(f); !os.IsNotExist(err) {
+						allLocalDeleted = false
+						break
+					}
+				}
+				if allLocalDeleted {
+					success = true
+					goto ExitLoop
+				}
+			}
+		}
+	}
+
+ExitLoop:
+	cancel()
+	<-errChan
+
+	if !success {
+		t.Fatal("SFTPGo live batch integration test failed")
+	}
+	t.Log("SFTPGo live batch integration test passed successfully!")
 }
 
 // TestLiveSFTPGo5KIntegration performs a realistic production load simulation of 5,000 files,
@@ -698,4 +893,995 @@ func getSFTPGoPort() int {
 		return 2022
 	}
 	return port
+}
+
+// TestLiveSFTPGoMatrixIntegration runs a matrix of realistic and live test cases against
+// the portable SFTPGo server. It tests multiple polling algorithms, post-processing
+// lifecycle actions, and configurations loaded from JSON files.
+// Run this test with:
+//
+//	$env:TEST_LIVE_SFTP="true"; go test -v -run=TestLiveSFTPGoMatrixIntegration ./internal/service
+func TestLiveSFTPGoMatrixIntegration(t *testing.T) {
+	if os.Getenv("TEST_LIVE_SFTP") != "true" {
+		t.Skip("Skipping live SFTP matrix test. Set TEST_LIVE_SFTP=true to run.")
+	}
+
+	tempDir := os.Getenv("TEMP")
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	timestamp := time.Now().Format("20060102150405")
+
+	// Start SFTPGo once for all matrix cases
+	sftpHome := filepath.Join(tempDir, "unitests", "sftpgo_home_matrix-"+timestamp)
+	_ = os.MkdirAll(sftpHome, 0o750)
+	defer func() { _ = fastRemoveAll(sftpHome) }()
+
+	masterKeyStr, _ := libsecsecrets.GenerateKey()
+	masterKey, _ := libsecsecrets.ResolveKey(context.Background(), masterKeyStr, "", "")
+	encPass, _ := libsecsecrets.Encrypt(context.Background(), "password123", masterKey)
+	libsecsecrets.ZeroBuffer(masterKey)
+
+	_ = os.Setenv("SECRETPROTECTOR_KEY", masterKeyStr)
+	defer func() { _ = os.Unsetenv("SECRETPROTECTOR_KEY") }()
+
+	sftpgoPath := getSFTPGoPath()
+	port := getSFTPGoPort() + 3
+	cmd := exec.Command(sftpgoPath, "portable",
+		"-d", sftpHome,
+		"-u", "testuser",
+		"-p", "password123",
+		"-s", strconv.Itoa(port),
+		"-g", "*",
+	)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Dir = sftpHome
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start SFTPGo: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill() }()
+
+	time.Sleep(2 * time.Second) // wait for server bind
+
+	// Sub-test cases
+	t.Run("TriggerPoller_MoveArchive_ArchiveRetention", func(t *testing.T) {
+		caseTime := time.Now().Format("150405")
+		pollDir := filepath.Join(tempDir, "unitests", "poll_matrix_trigger-"+caseTime)
+		archiveDir := filepath.Join(tempDir, "unitests", "archive_matrix_trigger-"+caseTime)
+		_ = os.MkdirAll(pollDir, 0o750)
+		_ = os.MkdirAll(archiveDir, 0o750)
+		defer func() {
+			_ = fastRemoveAll(pollDir)
+			_ = fastRemoveAll(archiveDir)
+		}()
+
+		// 1. Create a backdated archived file (older than 3 days) to verify that daily archive retention cleanup executes.
+		backdatedFile := filepath.Join(archiveDir, "old_archived_file.txt")
+		_ = os.WriteFile(backdatedFile, []byte("old archive"), 0o600)
+		threeDaysAgo := time.Now().AddDate(0, 0, -4)
+		_ = os.Chtimes(backdatedFile, threeDaysAgo, threeDaysAgo)
+
+		// 2. Write JSON config with Trigger Algorithm, Move Archive post-process, and 3 days retention
+		configPath := filepath.Join(tempDir, "unitests", "config_matrix_trigger-"+caseTime+".json")
+		configData := fmt.Sprintf(`{
+			"poll": {
+				"directory": "%s",
+				"algorithm": "trigger",
+				"value": "ready.txt",
+				"max_batch_size": 100,
+				"max_verification_workers": 16
+			},
+			"integrity": {
+				"algorithm": "size",
+				"attempts": 1,
+				"interval": 1
+			},
+			"action": {
+				"type": "sftp",
+				"concurrent_connections": 4,
+				"post_process": {
+					"action": "move_archive",
+					"archive_path": "%s",
+					"archive_retention": 3
+				},
+				"sftp": {
+					"host": "127.0.0.1",
+					"port": %d,
+					"username": "testuser",
+					"encrypted_password": "%s",
+					"master_key_env": "SECRETPROTECTOR_KEY",
+					"remote_path": "/"
+				}
+			}
+		}`, filepath.ToSlash(pollDir), filepath.ToSlash(archiveDir), port, encPass)
+		_ = os.WriteFile(configPath, []byte(configData), 0o600)
+		defer func() { _ = os.Remove(configPath) }()
+
+		cfg, _, err := config.LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+
+		engine, err := NewEngine(cfg, false)
+		if err != nil {
+			t.Fatalf("failed to create engine: %v", err)
+		}
+		defer engine.Close()
+
+		// 3. Write 3 data files. Verify they are NOT uploaded immediately because the trigger file is missing.
+		for i := 1; i <= 3; i++ {
+			_ = os.WriteFile(filepath.Join(pollDir, fmt.Sprintf("data_%d.txt", i)), []byte("invoice data"), 0o600)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		errChan := make(chan error, 1)
+		go func() {
+			errChan <- engine.Run(ctx)
+		}()
+
+		// Wait 1.5 seconds and assert no files were uploaded
+		time.Sleep(1500 * time.Millisecond)
+		for i := 1; i <= 3; i++ {
+			if _, err := os.Stat(filepath.Join(sftpHome, fmt.Sprintf("data_%d.txt", i))); err == nil {
+				cancel()
+				t.Fatalf("data_%d.txt should not have been uploaded yet (no trigger)", i)
+			}
+		}
+
+		// 4. Write trigger.ok file to trigger processing
+		triggerFile := filepath.Join(pollDir, "ready.txt")
+		_ = os.WriteFile(triggerFile, []byte("ready"), 0o600)
+		time.Sleep(1 * time.Second) // wait for handles release
+
+		// 5. Poll and verify all 3 data files are processed, uploaded, archived, and backdated archive gets cleaned up!
+		timeout := time.After(15 * time.Second)
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+
+		success := false
+		for {
+			select {
+			case <-timeout:
+				t.Error("timeout waiting for trigger processing")
+				goto ExitSubTest1
+			case <-ticker.C:
+				allUploaded := true
+				for i := 1; i <= 3; i++ {
+					if _, err := os.Stat(filepath.Join(sftpHome, fmt.Sprintf("data_%d.txt", i))); err != nil {
+						allUploaded = false
+						break
+					}
+				}
+				if allUploaded {
+					// Verify files are archived locally in datestamped subfolder
+					allArchived := true
+					for i := 1; i <= 3; i++ {
+						found := false
+						_ = filepath.Walk(archiveDir, func(path string, info os.FileInfo, err error) error {
+							if err == nil && !info.IsDir() && filepath.Base(path) == fmt.Sprintf("data_%d.txt", i) {
+								found = true
+							}
+							return nil
+						})
+						if !found {
+							allArchived = false
+							break
+						}
+					}
+					// Verify backdated archive is deleted
+					_, oldErr := os.Stat(backdatedFile)
+					if allArchived && os.IsNotExist(oldErr) {
+						success = true
+						goto ExitSubTest1
+					}
+				}
+			}
+		}
+
+	ExitSubTest1:
+		cancel()
+		<-errChan
+		if !success {
+			t.Fatal("TriggerPoller + MoveArchive + ArchiveRetention sub-test failed")
+		}
+	})
+
+	t.Run("EventPoller_MoveCompress", func(t *testing.T) {
+		caseTime := time.Now().Format("150405")
+		pollDir := filepath.Join(tempDir, "unitests", "poll_matrix_event-"+caseTime)
+		archiveDir := filepath.Join(tempDir, "unitests", "archive_matrix_event-"+caseTime)
+		_ = os.MkdirAll(pollDir, 0o750)
+		_ = os.MkdirAll(archiveDir, 0o750)
+		defer func() {
+			_ = fastRemoveAll(pollDir)
+			_ = fastRemoveAll(archiveDir)
+		}()
+
+		// Write config
+		configPath := filepath.Join(tempDir, "unitests", "config_matrix_event-"+caseTime+".json")
+		configData := fmt.Sprintf(`{
+			"poll": {
+				"directory": "%s",
+				"algorithm": "event",
+				"max_batch_size": 100,
+				"max_verification_workers": 16
+			},
+			"integrity": {
+				"algorithm": "size",
+				"attempts": 1,
+				"interval": 1
+			},
+			"action": {
+				"type": "sftp",
+				"concurrent_connections": 4,
+				"post_process": {
+					"action": "move_compress",
+					"archive_path": "%s"
+				},
+				"sftp": {
+					"host": "127.0.0.1",
+					"port": %d,
+					"username": "testuser",
+					"encrypted_password": "%s",
+					"master_key_env": "SECRETPROTECTOR_KEY",
+					"remote_path": "/"
+				}
+			}
+		}`, filepath.ToSlash(pollDir), filepath.ToSlash(archiveDir), port, encPass)
+		_ = os.WriteFile(configPath, []byte(configData), 0o600)
+		defer func() { _ = os.Remove(configPath) }()
+
+		cfg, _, err := config.LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+
+		engine, err := NewEngine(cfg, false)
+		if err != nil {
+			t.Fatalf("failed to create engine: %v", err)
+		}
+		defer engine.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		errChan := make(chan error, 1)
+		go func() {
+			errChan <- engine.Run(ctx)
+		}()
+
+		// Write 4 files to pollDir
+		var localFiles []string
+		for i := 1; i <= 4; i++ {
+			path := filepath.Join(pollDir, fmt.Sprintf("event_data_%d.txt", i))
+			_ = os.WriteFile(path, []byte("event file data"), 0o600)
+			localFiles = append(localFiles, path)
+		}
+		time.Sleep(1 * time.Second) // handles release
+
+		// Verify files are uploaded to SFTPGo and compressed in archiveDir
+		timeout := time.After(15 * time.Second)
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+
+		success := false
+		for {
+			select {
+			case <-timeout:
+				t.Error("timeout waiting for event processing")
+				goto ExitSubTest2
+			case <-ticker.C:
+				allUploaded := true
+				for i := 1; i <= 4; i++ {
+					if _, err := os.Stat(filepath.Join(sftpHome, fmt.Sprintf("event_data_%d.txt", i))); err != nil {
+						allUploaded = false
+						break
+					}
+				}
+				if allUploaded {
+					// Verify local files are deleted
+					allDeleted := true
+					for _, f := range localFiles {
+						if _, err := os.Stat(f); !os.IsNotExist(err) {
+							allDeleted = false
+							break
+						}
+					}
+					// Verify a compressed archive (.zst) exists in archiveDir
+					var hasArchive bool
+					entries, err := os.ReadDir(archiveDir)
+					if err == nil {
+						for _, entry := range entries {
+							if strings.HasSuffix(entry.Name(), ".zst") {
+								hasArchive = true
+								break
+							}
+						}
+					}
+					if allDeleted && hasArchive {
+						success = true
+						goto ExitSubTest2
+					}
+				}
+			}
+		}
+
+	ExitSubTest2:
+		cancel()
+		<-errChan
+		if !success {
+			t.Fatal("EventPoller + MoveCompress sub-test failed")
+		}
+	})
+}
+
+func startSFTPGo(port int, sftpHome string) (*exec.Cmd, error) {
+	sftpgoPath := getSFTPGoPath()
+	cmd := exec.Command(sftpgoPath, "portable",
+		"-d", sftpHome,
+		"-u", "testuser",
+		"-p", "password123",
+		"-s", strconv.Itoa(port),
+		"-g", "*",
+	)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Dir = sftpHome
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return cmd, nil
+}
+
+// TestLiveSFTPGoLongevityAndGoroutineLeak validates that the Engine does not leak goroutines
+// or memory over multiple hours/cycles of execution.
+func TestLiveSFTPGoLongevityAndGoroutineLeak(t *testing.T) {
+	if os.Getenv("TEST_LIVE_SFTP") != "true" {
+		t.Skip("Skipping live SFTP longevity test. Set TEST_LIVE_SFTP=true to run.")
+	}
+
+	tempDir := os.Getenv("TEMP")
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	timestamp := time.Now().Format("20060102150405")
+	sftpHome := filepath.Join(tempDir, "unitests", "sftpgo_home_leak-"+timestamp)
+	_ = os.MkdirAll(sftpHome, 0o750)
+	defer func() { _ = fastRemoveAll(sftpHome) }()
+
+	port := getSFTPGoPort() + 4
+	cmd, err := startSFTPGo(port, sftpHome)
+	if err != nil {
+		t.Fatalf("failed to start SFTPGo: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill() }()
+	time.Sleep(2 * time.Second)
+
+	pollDir := filepath.Join(tempDir, "unitests", "poll_leak-"+timestamp)
+	archiveDir := filepath.Join(tempDir, "unitests", "archive_leak-"+timestamp)
+	_ = os.MkdirAll(pollDir, 0o750)
+	_ = os.MkdirAll(archiveDir, 0o750)
+	defer func() {
+		_ = fastRemoveAll(pollDir)
+		_ = fastRemoveAll(archiveDir)
+	}()
+
+	masterKeyStr, _ := libsecsecrets.GenerateKey()
+	masterKey, _ := libsecsecrets.ResolveKey(context.Background(), masterKeyStr, "", "")
+	encPass, _ := libsecsecrets.Encrypt(context.Background(), "password123", masterKey)
+	libsecsecrets.ZeroBuffer(masterKey)
+
+	_ = os.Setenv("SECRETPROTECTOR_KEY", masterKeyStr)
+	defer func() { _ = os.Unsetenv("SECRETPROTECTOR_KEY") }()
+
+	configPath := filepath.Join(tempDir, "unitests", "config_leak-"+timestamp+".json")
+	configData := fmt.Sprintf(`{
+		"poll": {
+			"directory": "%s",
+			"algorithm": "interval",
+			"value": 2,
+			"max_batch_size": 100,
+			"max_verification_workers": 16
+		},
+		"integrity": {
+			"algorithm": "size",
+			"attempts": 1,
+			"interval": 1
+		},
+		"action": {
+			"type": "sftp",
+			"concurrent_connections": 4,
+			"post_process": {
+				"action": "delete",
+				"archive_path": "%s"
+			},
+			"sftp": {
+				"host": "127.0.0.1",
+				"port": %d,
+				"username": "testuser",
+				"encrypted_password": "%s",
+				"master_key_env": "SECRETPROTECTOR_KEY",
+				"remote_path": "/"
+			}
+		}
+	}`, filepath.ToSlash(pollDir), filepath.ToSlash(archiveDir), port, encPass)
+	_ = os.WriteFile(configPath, []byte(configData), 0o600)
+	defer func() { _ = os.Remove(configPath) }()
+
+	cfg, _, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	// 1. Capture baseline goroutines
+	runtime.GC()
+	time.Sleep(500 * time.Millisecond)
+	baselineGoroutines := runtime.NumGoroutine()
+
+	engine, err := NewEngine(cfg, false)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- engine.Run(ctx)
+	}()
+
+	// 2. Perform 10 bursts of file writes over 15 seconds
+	for b := 1; b <= 10; b++ {
+		for i := 1; i <= 5; i++ {
+			_ = os.WriteFile(filepath.Join(pollDir, fmt.Sprintf("leak_file_%d_%d.txt", b, i)), []byte("leak test"), 0o600)
+		}
+		time.Sleep(1200 * time.Millisecond)
+	}
+
+	// Verify all 50 files uploaded (with a timeout)
+	timeout := time.After(15 * time.Second)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	success := false
+	for {
+		select {
+		case <-timeout:
+			cancel()
+			t.Fatal("timeout waiting for all longevity burst files to upload")
+		case <-ticker.C:
+			allUploaded := true
+			for b := 1; b <= 10; b++ {
+				for i := 1; i <= 5; i++ {
+					upFile := filepath.Join(sftpHome, fmt.Sprintf("leak_file_%d_%d.txt", b, i))
+					if _, err := os.Stat(upFile); err != nil {
+						allUploaded = false
+						break
+					}
+				}
+				if !allUploaded {
+					break
+				}
+			}
+			if allUploaded {
+				success = true
+				goto ExitLeakVerify
+			}
+		}
+	}
+
+ExitLeakVerify:
+	if !success {
+		cancel()
+		t.Fatal("file verification failed")
+	}
+
+	// 3. Close the Engine and cancel context
+	engine.Close()
+	cancel()
+	<-errChan
+
+	// 4. Force GC and verify goroutine count returns back to baseline
+	runtime.GC()
+	time.Sleep(1500 * time.Millisecond) // Give runtime time to clean up completed goroutines
+	runtime.GC()
+
+	finalGoroutines := runtime.NumGoroutine()
+	// Allow a small headroom of 6 goroutines for normal system variance
+	headroom := 6
+	if finalGoroutines > baselineGoroutines+headroom {
+		t.Errorf("Goroutine leak detected: baseline=%d, final=%d (headroom=%d)", baselineGoroutines, finalGoroutines, headroom)
+	} else {
+		t.Logf("Goroutine leak test passed. Baseline: %d, Final: %d", baselineGoroutines, finalGoroutines)
+	}
+}
+
+// TestLiveSFTPGoConcurrencyAndBackpressure validates thread-safety and lack of race conditions
+// when multiple concurrent writers stress the Engine while worker connections are limited.
+func TestLiveSFTPGoConcurrencyAndBackpressure(t *testing.T) {
+	if os.Getenv("TEST_LIVE_SFTP") != "true" {
+		t.Skip("Skipping live SFTP concurrency test. Set TEST_LIVE_SFTP=true to run.")
+	}
+
+	tempDir := os.Getenv("TEMP")
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	timestamp := time.Now().Format("20060102150405")
+	sftpHome := filepath.Join(tempDir, "unitests", "sftpgo_home_concur-"+timestamp)
+	_ = os.MkdirAll(sftpHome, 0o750)
+	defer func() { _ = fastRemoveAll(sftpHome) }()
+
+	port := getSFTPGoPort() + 5
+	cmd, err := startSFTPGo(port, sftpHome)
+	if err != nil {
+		t.Fatalf("failed to start SFTPGo: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill() }()
+	time.Sleep(2 * time.Second)
+
+	pollDir := filepath.Join(tempDir, "unitests", "poll_concur-"+timestamp)
+	archiveDir := filepath.Join(tempDir, "unitests", "archive_concur-"+timestamp)
+	_ = os.MkdirAll(pollDir, 0o750)
+	_ = os.MkdirAll(archiveDir, 0o750)
+	defer func() {
+		_ = fastRemoveAll(pollDir)
+		_ = fastRemoveAll(archiveDir)
+	}()
+
+	masterKeyStr, _ := libsecsecrets.GenerateKey()
+	masterKey, _ := libsecsecrets.ResolveKey(context.Background(), masterKeyStr, "", "")
+	encPass, _ := libsecsecrets.Encrypt(context.Background(), "password123", masterKey)
+	libsecsecrets.ZeroBuffer(masterKey)
+
+	_ = os.Setenv("SECRETPROTECTOR_KEY", masterKeyStr)
+	defer func() { _ = os.Unsetenv("SECRETPROTECTOR_KEY") }()
+
+	configPath := filepath.Join(tempDir, "unitests", "config_concur-"+timestamp+".json")
+	// Low MaxBatchSize (100) and ConcurrentConnections (2) to force backpressure/queuing
+	configData := fmt.Sprintf(`{
+		"poll": {
+			"directory": "%s",
+			"algorithm": "batch",
+			"value": 3,
+			"max_batch_size": 100,
+			"max_verification_workers": 16
+		},
+		"integrity": {
+			"algorithm": "size",
+			"attempts": 3,
+			"interval": 1
+		},
+		"action": {
+			"type": "sftp",
+			"concurrent_connections": 2,
+			"post_process": {
+				"action": "delete",
+				"archive_path": "%s"
+			},
+			"sftp": {
+				"host": "127.0.0.1",
+				"port": %d,
+				"username": "testuser",
+				"encrypted_password": "%s",
+				"master_key_env": "SECRETPROTECTOR_KEY",
+				"remote_path": "/"
+			}
+		}
+	}`, filepath.ToSlash(pollDir), filepath.ToSlash(archiveDir), port, encPass)
+	_ = os.WriteFile(configPath, []byte(configData), 0o600)
+	defer func() { _ = os.Remove(configPath) }()
+
+	cfg, _, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	engine, err := NewEngine(cfg, false)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	defer engine.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- engine.Run(ctx)
+	}()
+
+	// Spawn 4 concurrent writers writing 50 files each (total 200 files) at random intervals
+	var wg sync.WaitGroup
+	totalFiles := 200
+	filesPerWriter := 50
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(writerId int) {
+			defer wg.Done()
+			for i := 1; i <= filesPerWriter; i++ {
+				filename := fmt.Sprintf("concur_file_%d_%d.txt", writerId, i)
+				filePath := filepath.Join(pollDir, filename)
+				_ = os.WriteFile(filePath, []byte("concurrency stress test data"), 0o600)
+				time.Sleep(time.Duration(10+rand.Intn(40)) * time.Millisecond)
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	// Wait for all uploads to complete
+	timeout := time.After(45 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	success := false
+	for {
+		select {
+		case <-timeout:
+			t.Error("timeout waiting for concurrency stress test to complete")
+			goto ExitConcur
+		case <-ticker.C:
+			uploadedCount := 0
+			entries, err := os.ReadDir(sftpHome)
+			if err == nil {
+				for _, entry := range entries {
+					if strings.HasPrefix(entry.Name(), "concur_file_") {
+						uploadedCount++
+					}
+				}
+			}
+			if uploadedCount == totalFiles {
+				success = true
+				goto ExitConcur
+			}
+		}
+	}
+
+ExitConcur:
+	cancel()
+	<-errChan
+	if !success {
+		t.Fatal("Concurrency and backpressure integration test failed")
+	}
+}
+
+// TestLiveSFTPGoMidTransferDisconnectAndRecovery validates that if connection is lost
+// mid-transfer, the engine retries with backoff and resumes cleanly when SFTP recovers.
+func TestLiveSFTPGoMidTransferDisconnectAndRecovery(t *testing.T) {
+	if os.Getenv("TEST_LIVE_SFTP") != "true" {
+		t.Skip("Skipping live SFTP disconnect/recovery test. Set TEST_LIVE_SFTP=true to run.")
+	}
+
+	tempDir := os.Getenv("TEMP")
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	timestamp := time.Now().Format("20060102150405")
+	sftpHome := filepath.Join(tempDir, "unitests", "sftpgo_home_recov-"+timestamp)
+	_ = os.MkdirAll(sftpHome, 0o750)
+	defer func() { _ = fastRemoveAll(sftpHome) }()
+
+	port := getSFTPGoPort() + 6
+	cmd, err := startSFTPGo(port, sftpHome)
+	if err != nil {
+		t.Fatalf("failed to start SFTPGo: %v", err)
+	}
+	time.Sleep(2 * time.Second)
+
+	pollDir := filepath.Join(tempDir, "unitests", "poll_recov-"+timestamp)
+	archiveDir := filepath.Join(tempDir, "unitests", "archive_recov-"+timestamp)
+	_ = os.MkdirAll(pollDir, 0o750)
+	_ = os.MkdirAll(archiveDir, 0o750)
+	defer func() {
+		_ = fastRemoveAll(pollDir)
+		_ = fastRemoveAll(archiveDir)
+	}()
+
+	masterKeyStr, _ := libsecsecrets.GenerateKey()
+	masterKey, _ := libsecsecrets.ResolveKey(context.Background(), masterKeyStr, "", "")
+	encPass, _ := libsecsecrets.Encrypt(context.Background(), "password123", masterKey)
+	libsecsecrets.ZeroBuffer(masterKey)
+
+	_ = os.Setenv("SECRETPROTECTOR_KEY", masterKeyStr)
+	defer func() { _ = os.Unsetenv("SECRETPROTECTOR_KEY") }()
+
+	configPath := filepath.Join(tempDir, "unitests", "config_recov-"+timestamp+".json")
+	configData := fmt.Sprintf(`{
+		"poll": {
+			"directory": "%s",
+			"algorithm": "interval",
+			"value": 1,
+			"max_batch_size": 100,
+			"max_verification_workers": 16
+		},
+		"integrity": {
+			"algorithm": "size",
+			"attempts": 1,
+			"interval": 1
+		},
+		"action": {
+			"type": "sftp",
+			"concurrent_connections": 2,
+			"post_process": {
+				"action": "delete",
+				"archive_path": "%s"
+			},
+			"sftp": {
+				"host": "127.0.0.1",
+				"port": %d,
+				"username": "testuser",
+				"encrypted_password": "%s",
+				"master_key_env": "SECRETPROTECTOR_KEY",
+				"remote_path": "/"
+			}
+		}
+	}`, filepath.ToSlash(pollDir), filepath.ToSlash(archiveDir), port, encPass)
+	_ = os.WriteFile(configPath, []byte(configData), 0o600)
+	defer func() { _ = os.Remove(configPath) }()
+
+	cfg, _, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	engine, err := NewEngine(cfg, false)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	defer engine.Close()
+
+	// Write 5 files to transfer
+	for i := 1; i <= 5; i++ {
+		_ = os.WriteFile(filepath.Join(pollDir, fmt.Sprintf("recov_file_%d.txt", i)), []byte("recovery test data"), 0o600)
+	}
+	time.Sleep(1 * time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- engine.Run(ctx)
+	}()
+
+	// 1. Let the engine start processing and kill the SFTPGo server process mid-transfer
+	time.Sleep(300 * time.Millisecond)
+	_ = cmd.Process.Kill()
+	t.Log("SFTPGo killed mid-transfer. Waiting for engine backoff cycle...")
+
+	// 2. Wait 3 seconds to let the engine hit connection errors and trigger backoffs
+	time.Sleep(3 * time.Second)
+
+	// 3. Restart SFTPGo on the same port
+	cmd, err = startSFTPGo(port, sftpHome)
+	if err != nil {
+		cancel()
+		t.Fatalf("failed to restart SFTPGo: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill() }()
+	t.Log("SFTPGo restarted. Verifying auto-recovery...")
+
+	// 4. Poll and verify all 5 files are successfully uploaded and cleaned up
+	timeout := time.After(25 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	success := false
+	for {
+		select {
+		case <-timeout:
+			t.Error("timeout waiting for auto-recovery upload completion")
+			goto ExitRecov
+		case <-ticker.C:
+			uploadedCount := 0
+			entries, err := os.ReadDir(sftpHome)
+			if err == nil {
+				for _, entry := range entries {
+					if strings.HasPrefix(entry.Name(), "recov_file_") {
+						uploadedCount++
+					}
+				}
+			}
+			if uploadedCount == 5 {
+				success = true
+				goto ExitRecov
+			}
+		}
+	}
+
+ExitRecov:
+	cancel()
+	<-errChan
+	if !success {
+		t.Fatal("Mid-transfer connection drop and recovery integration test failed")
+	}
+}
+
+// TestLiveSFTPGoConstantInfluxAndHandleLeak streams 500 files in a continuous, high-volume influx
+// to the poller, and verifies that no file descriptors or handles are leaked during the transfers.
+// Run this test with:
+//
+//	$env:TEST_LIVE_SFTP="true"; go test -v -run=TestLiveSFTPGoConstantInfluxAndHandleLeak ./internal/service
+func TestLiveSFTPGoConstantInfluxAndHandleLeak(t *testing.T) {
+	if os.Getenv("TEST_LIVE_SFTP") != "true" {
+		t.Skip("Skipping live SFTP influx leak test. Set TEST_LIVE_SFTP=true to run.")
+	}
+
+	tempDir := os.Getenv("TEMP")
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	timestamp := time.Now().Format("20060102150405")
+	sftpHome := filepath.Join(tempDir, "unitests", "sftpgo_home_influx-"+timestamp)
+	_ = os.MkdirAll(sftpHome, 0o750)
+	defer func() { _ = fastRemoveAll(sftpHome) }()
+
+	port := getSFTPGoPort() + 7
+	cmd, err := startSFTPGo(port, sftpHome)
+	if err != nil {
+		t.Fatalf("failed to start SFTPGo: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill() }()
+	time.Sleep(2 * time.Second)
+
+	pollDir := filepath.Join(tempDir, "unitests", "poll_influx-"+timestamp)
+	archiveDir := filepath.Join(tempDir, "unitests", "archive_influx-"+timestamp)
+	_ = os.MkdirAll(pollDir, 0o750)
+	_ = os.MkdirAll(archiveDir, 0o750)
+	defer func() {
+		_ = fastRemoveAll(pollDir)
+		_ = fastRemoveAll(archiveDir)
+	}()
+
+	masterKeyStr, _ := libsecsecrets.GenerateKey()
+	masterKey, _ := libsecsecrets.ResolveKey(context.Background(), masterKeyStr, "", "")
+	encPass, _ := libsecsecrets.Encrypt(context.Background(), "password123", masterKey)
+	libsecsecrets.ZeroBuffer(masterKey)
+
+	_ = os.Setenv("SECRETPROTECTOR_KEY", masterKeyStr)
+	defer func() { _ = os.Unsetenv("SECRETPROTECTOR_KEY") }()
+
+	configPath := filepath.Join(tempDir, "unitests", "config_influx-"+timestamp+".json")
+	configData := fmt.Sprintf(`{
+		"poll": {
+			"directory": "%s",
+			"algorithm": "interval",
+			"value": 1,
+			"max_batch_size": 100,
+			"max_verification_workers": 32
+		},
+		"integrity": {
+			"algorithm": "size",
+			"attempts": 3,
+			"interval": 1
+		},
+		"action": {
+			"type": "sftp",
+			"concurrent_connections": 8,
+			"post_process": {
+				"action": "delete",
+				"archive_path": "%s"
+			},
+			"sftp": {
+				"host": "127.0.0.1",
+				"port": %d,
+				"username": "testuser",
+				"encrypted_password": "%s",
+				"master_key_env": "SECRETPROTECTOR_KEY",
+				"remote_path": "/"
+			}
+		}
+	}`, filepath.ToSlash(pollDir), filepath.ToSlash(archiveDir), port, encPass)
+	_ = os.WriteFile(configPath, []byte(configData), 0o600)
+	defer func() { _ = os.Remove(configPath) }()
+
+	cfg, _, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	engine, err := NewEngine(cfg, false)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- engine.Run(ctx)
+	}()
+
+	// 1. Capture initial open handles
+	runtime.GC()
+	time.Sleep(500 * time.Millisecond)
+	initialHandles, err := getOpenHandles()
+	if err != nil {
+		t.Fatalf("failed to get open handles count: %v", err)
+	}
+	t.Logf("Initial open process handles: %d", initialHandles)
+
+	// 2. Continuous influx: write 500 files, 20 files every 100ms
+	totalFiles := 500
+	groupSize := 20
+	groups := totalFiles / groupSize
+
+	for g := 0; g < groups; g++ {
+		for i := 0; i < groupSize; i++ {
+			filename := fmt.Sprintf("influx_file_%d_%d.txt", g, i)
+			_ = os.WriteFile(filepath.Join(pollDir, filename), []byte("influx test data"), 0o600)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// 3. Wait for all 500 files to be uploaded with a timeout
+	timeout := time.After(35 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	success := false
+	for {
+		select {
+		case <-timeout:
+			engine.Close()
+			cancel()
+			t.Fatal("timeout waiting for all influx files to upload and delete")
+		case <-ticker.C:
+			uploadedCount := 0
+			entries, err := os.ReadDir(sftpHome)
+			if err == nil {
+				for _, entry := range entries {
+					if strings.HasPrefix(entry.Name(), "influx_file_") {
+						uploadedCount++
+					}
+				}
+			}
+
+			localCount := 0
+			localEntries, err := os.ReadDir(pollDir)
+			if err == nil {
+				for _, entry := range localEntries {
+					if strings.HasPrefix(entry.Name(), "influx_file_") {
+						localCount++
+					}
+				}
+			}
+
+			if uploadedCount == totalFiles && localCount == 0 {
+				success = true
+				goto ExitInflux
+			}
+		}
+	}
+
+ExitInflux:
+	cancel()
+	<-errChan
+	engine.Close()
+
+	// Forcibly kill SFTPGo child process and reap it to release handles
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+
+	// Clean up temporary directories on disk to release OS and antivirus handle locks on the 1000 files
+	_ = fastRemoveAll(pollDir)
+	_ = fastRemoveAll(archiveDir)
+	_ = fastRemoveAll(sftpHome)
+
+	if !success {
+		t.Fatal("Influx upload failed")
+	}
+
+	// 4. Force GC and assert that final handle count did not leak
+	runtime.GC()
+	time.Sleep(1500 * time.Millisecond)
+	runtime.GC()
+
+	finalHandles, err := getOpenHandles()
+	if err != nil {
+		t.Fatalf("failed to get final open handles: %v", err)
+	}
+	t.Logf("Final open process handles: %d", finalHandles)
+
+	// Allow a reasonable headroom for background Go network/dialer cached sockets and OS TCP TIME_WAIT states
+	headroom := 120
+	if finalHandles > initialHandles+headroom {
+		t.Errorf("Handle leak detected: initial=%d, final=%d", initialHandles, finalHandles)
+	} else {
+		t.Log("Influx handle leak test passed successfully.")
+	}
 }

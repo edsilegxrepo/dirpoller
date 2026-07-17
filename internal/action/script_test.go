@@ -15,6 +15,7 @@ package action
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -234,4 +235,53 @@ func TestScriptHandler_ExecuteScript_Errors(t *testing.T) {
 			t.Error("expected error for non-existent script, got nil")
 		}
 	})
+}
+
+func TestScriptAction_OutputLimiter(t *testing.T) {
+	testDir := getScriptTestDir("ScriptLimit")
+	testFile := filepath.Join(testDir, "test.txt")
+	_ = os.WriteFile(testFile, []byte("hello"), 0o644)
+
+	scriptExt := ".bat"
+	// Generate output larger than 64KB (e.g. 70KB of data)
+	scriptContent := "@echo off\nfor /L %%i in (1,1,1000) do echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nexit /b 1"
+	if runtime.GOOS != "windows" {
+		scriptExt = ".sh"
+		scriptContent = "#!/bin/sh\nfor i in $(seq 1 1000); do echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; done\nexit 1"
+	}
+
+	scriptPath := filepath.Join(testDir, "limit_script"+scriptExt)
+	_ = os.WriteFile(scriptPath, []byte(scriptContent), 0o755)
+
+	cfg := &config.Config{
+		Action: config.ActionConfig{
+			ConcurrentConnections: 1,
+			Script: config.ScriptConfig{
+				Path:           scriptPath,
+				TimeoutSeconds: 5,
+			},
+		},
+	}
+
+	h := NewScriptHandler(cfg)
+	defer func() { _ = h.Close() }()
+
+	ctx := context.Background()
+	_, err := h.Execute(ctx, []string{testFile})
+	if err == nil {
+		t.Fatal("expected error from failed script, got nil")
+	}
+
+	var execErr *ErrExecutionFailed
+	if !errors.As(err, &execErr) {
+		t.Fatalf("expected ErrExecutionFailed, got %v", err)
+	}
+
+	outputLen := len(execErr.Output)
+	if outputLen > 64*1024 {
+		t.Errorf("expected script output to be capped at 65536 bytes, got %d bytes", outputLen)
+	}
+	if outputLen == 0 {
+		t.Error("expected some output to be captured, got empty string")
+	}
 }

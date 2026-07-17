@@ -28,19 +28,22 @@ import (
 // Once detected, it processes all other files currently pending in the directory.
 // It also includes a timeout fallback to process files if the trigger never arrives.
 type TriggerPoller struct {
-	cfg        *config.Config
-	utils      OSUtils
-	mu         sync.Mutex
-	files      map[string]struct{}
-	newWatcher func() (Watcher, error)
+	cfg          *config.Config
+	utils        OSUtils
+	mu           sync.Mutex
+	files        map[string]struct{}
+	newWatcher   func() (Watcher, error)
+	hasBacklog   bool
+	backlogUtils OSUtils
 }
 
 // NewTriggerPoller initializes a new TriggerPoller with pattern-based detection.
 func NewTriggerPoller(cfg *config.Config) *TriggerPoller {
 	return &TriggerPoller{
-		cfg:   cfg,
-		utils: NewOSUtils(cfg.Poll.MaxBatchSize),
-		files: make(map[string]struct{}),
+		cfg:          cfg,
+		utils:        NewOSUtils(cfg.Poll.MaxBatchSize),
+		backlogUtils: NewOSUtils(0), // Unlimited for backlog scans
+		files:        make(map[string]struct{}),
 		newWatcher: func() (Watcher, error) {
 			return newRealWatcher()
 		},
@@ -90,14 +93,23 @@ func (p *TriggerPoller) Start(ctx context.Context, results chan<- []string) erro
 			p.files[f] = struct{}{}
 		}
 	}
+	if len(initialFiles) >= p.cfg.Poll.MaxBatchSize {
+		p.hasBacklog = true
+	}
 	if hasTrigger {
-		p.flush(results)
+		p.flush(ctx, results)
 	}
 	p.mu.Unlock()
 
 	timeoutDuration := time.Duration(p.cfg.Poll.BatchTimeoutSeconds) * time.Second
+	if timeoutDuration <= 0 {
+		timeoutDuration = 600 * time.Second
+	}
 	timeoutTicker := time.NewTicker(timeoutDuration)
 	defer timeoutTicker.Stop()
+
+	backlogTicker := time.NewTicker(2 * time.Second)
+	defer backlogTicker.Stop()
 
 	for {
 		select {
@@ -106,7 +118,33 @@ func (p *TriggerPoller) Start(ctx context.Context, results chan<- []string) erro
 		case <-timeoutTicker.C:
 			p.mu.Lock()
 			if len(p.files) > 0 {
-				p.flush(results)
+				p.flush(ctx, results)
+			}
+			p.mu.Unlock()
+		case <-backlogTicker.C:
+			p.mu.Lock()
+			if len(p.files) == 0 {
+				backlog := p.scanBacklog()
+				if len(backlog) > 0 {
+					hasTrigger := false
+					for _, f := range backlog {
+						if p.isTriggerFile(f, pattern) {
+							hasTrigger = true
+						} else {
+							p.files[f] = struct{}{}
+						}
+					}
+					if hasTrigger && len(p.files) > 0 {
+						p.flush(ctx, results)
+					}
+					if len(backlog) >= p.cfg.Poll.MaxBatchSize {
+						p.hasBacklog = true
+					} else {
+						p.hasBacklog = false
+					}
+				} else {
+					p.hasBacklog = false
+				}
 			}
 			p.mu.Unlock()
 		case event, ok := <-watcher.Events():
@@ -116,7 +154,7 @@ func (p *TriggerPoller) Start(ctx context.Context, results chan<- []string) erro
 			if event.Op&(fsnotify.Write|fsnotify.Create) != 0 {
 				p.mu.Lock()
 				if p.isTriggerFile(event.Name, pattern) {
-					p.flush(results)
+					p.flush(ctx, results)
 					timeoutTicker.Reset(timeoutDuration)
 				} else {
 					// Check if it's a directory before adding to files
@@ -136,6 +174,23 @@ func (p *TriggerPoller) Start(ctx context.Context, results chan<- []string) erro
 	}
 }
 
+func (p *TriggerPoller) scanBacklog() []string {
+	files, err := p.backlogUtils.GetFiles(p.cfg.Poll.Directory)
+	if err != nil {
+		return nil
+	}
+	var backlog []string
+	for _, f := range files {
+		if !IsInFlight(f) {
+			backlog = append(backlog, f)
+			if len(backlog) >= p.cfg.Poll.MaxBatchSize {
+				break
+			}
+		}
+	}
+	return backlog
+}
+
 func (p *TriggerPoller) isTriggerFile(path, pattern string) bool {
 	name := filepath.Base(path)
 	match, err := filepath.Match(pattern, name)
@@ -146,7 +201,7 @@ func (p *TriggerPoller) isTriggerFile(path, pattern string) bool {
 	return match
 }
 
-func (p *TriggerPoller) flush(results chan<- []string) {
+func (p *TriggerPoller) flush(ctx context.Context, results chan<- []string) {
 	if len(p.files) == 0 {
 		return
 	}
@@ -154,10 +209,15 @@ func (p *TriggerPoller) flush(results chan<- []string) {
 	for f := range p.files {
 		batch = append(batch, f)
 	}
-	// Security: Dispatch in a goroutine to prevent blocking the poller loop
-	// when the results channel consumer is slow.
-	go func(b []string) {
-		results <- b
-	}(batch)
+	if len(batch) >= p.cfg.Poll.MaxBatchSize {
+		p.hasBacklog = true
+	}
 	p.files = make(map[string]struct{})
+
+	p.mu.Unlock()
+	select {
+	case results <- batch:
+	case <-ctx.Done():
+	}
+	p.mu.Lock()
 }

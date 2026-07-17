@@ -149,6 +149,7 @@ type SFTPHandler struct {
 	dialer          Dialer
 	mu              sync.Mutex
 	consecutiveFail int // Counter for connection-level failures (Circuit Breaker)
+	lastFailureTime time.Time
 
 	// Connection Pool fields
 	pool        chan *sftpSession
@@ -219,8 +220,13 @@ func (h *SFTPHandler) Execute(ctx context.Context, files []string) ([]string, er
 
 	h.mu.Lock()
 	if h.consecutiveFail >= circuitBreakerThreshold {
-		h.mu.Unlock()
-		return nil, fmt.Errorf("circuit breaker active: too many consecutive SFTP failures")
+		if !h.lastFailureTime.IsZero() && time.Since(h.lastFailureTime) >= 5*time.Second {
+			h.lastFailureTime = time.Now() // Shift cooldown window forward to prevent thundering herd probes
+			log.Printf("[Action:SFTP] Circuit Breaker: cooldown expired, probing connection...\n")
+		} else {
+			h.mu.Unlock()
+			return nil, fmt.Errorf("circuit breaker active: too many consecutive SFTP failures")
+		}
 	}
 	h.mu.Unlock()
 
@@ -367,6 +373,7 @@ func (h *SFTPHandler) incrementFail() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.consecutiveFail++
+	h.lastFailureTime = time.Now()
 }
 
 func (h *SFTPHandler) resetFail() {
@@ -383,14 +390,18 @@ func (h *SFTPHandler) discardSession(sess *sftpSession) {
 		_ = sess.conn.Close()
 	}
 	h.mu.Lock()
-	h.activeConns--
+	found := false
 	for idx, s := range h.allSessions {
 		if s == sess {
 			copy(h.allSessions[idx:], h.allSessions[idx+1:])
 			h.allSessions[len(h.allSessions)-1] = nil
 			h.allSessions = h.allSessions[:len(h.allSessions)-1]
+			found = true
 			break
 		}
+	}
+	if found {
+		h.activeConns--
 	}
 	h.mu.Unlock()
 }
@@ -521,8 +532,8 @@ func (h *SFTPHandler) releaseSession(sess *sftpSession) {
 	sess.lastUsed = time.Now()
 	h.mu.Lock()
 	if h.closed {
-		_ = sess.conn.Close()
 		h.mu.Unlock()
+		h.discardSession(sess)
 		return
 	}
 	h.mu.Unlock()
@@ -531,10 +542,7 @@ func (h *SFTPHandler) releaseSession(sess *sftpSession) {
 	case h.pool <- sess:
 	default:
 		// Pool is full, discard session
-		_ = sess.conn.Close()
-		h.mu.Lock()
-		h.activeConns--
-		h.mu.Unlock()
+		h.discardSession(sess)
 	}
 }
 
@@ -663,12 +671,35 @@ func (h *SFTPHandler) uploadFile(client SFTPClient, localPath string) error {
 	localSize := stat.Size()
 
 	// Atomic Upload Protocol: Stage -> Transfer -> Commit -> Verify
-	// 1. Stage: Create remote temp file with UUID
 	remoteDir := h.cfg.Action.SFTP.RemotePath
 	baseName := filepath.Base(localPath)
 	destPath := path.Join(remoteDir, baseName)
-	tmpPath := destPath + "." + uuid.NewString() + ".tmp"
 
+	if h.cfg.Action.SFTP.DisableAtomicCommit {
+		dst, err := client.Create(destPath)
+		if err != nil {
+			return fmt.Errorf("[Action:SFTP] failed to create remote file: %w", err)
+		}
+
+		bufPtr := bufPool.Get().(*[]byte)
+		defer bufPool.Put(bufPtr)
+		buf := *bufPtr
+
+		written, err := io.CopyBuffer(dst, src, buf)
+		_ = dst.Close()
+		if err != nil {
+			_ = client.Remove(destPath)
+			return fmt.Errorf("[Action:SFTP] failed to transfer data: %w", err)
+		}
+
+		if written != localSize {
+			_ = client.Remove(destPath)
+			return fmt.Errorf("[Action:SFTP] integrity check failed: size mismatch (local: %d, written: %d)", localSize, written)
+		}
+		return nil
+	}
+
+	tmpPath := destPath + "." + uuid.NewString() + ".tmp"
 	dst, err := client.Create(tmpPath)
 	if err != nil {
 		return fmt.Errorf("[Action:SFTP] failed to create remote temp file: %w", err)
