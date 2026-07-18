@@ -22,15 +22,17 @@ import (
 	"criticalsys.net/dirpoller/internal/testutils"
 )
 
-// TestCustomLogger_LogExecution verifies the formatting and creation of per-cycle activity logs.
+// TestCustomLogger_LogExecution verifies the formatting and creation of daily activity logs.
 //
 // Scenario:
 // 1. Initialize CustomLogger with a temporary test directory.
-// 2. Log an execution summary containing both processed and failed files.
-// 3. Inspect the resulting activity log file content.
+// 2. Log a first execution summary containing both processed and failed files.
+// 3. Log a second execution summary containing processed files.
+// 4. Inspect the resulting daily activity log file content.
 //
 // Success Criteria:
-// - File must be named with the correct "activity" prefix and timestamp.
+// - Only one file must be created, named with the correct "activity" prefix and YYYYMMDD suffix.
+// - Content must append both execution cycles.
 // - Content must include all metadata (path, size, hash) for each file.
 // - Sections (# Status, # List of files...) must be correctly delimited.
 func TestCustomLogger_LogExecution(t *testing.T) {
@@ -39,7 +41,7 @@ func TestCustomLogger_LogExecution(t *testing.T) {
 	logName := filepath.Join(testDir, "test.log")
 	logger := NewCustomLogger(logName, 0)
 
-	summary := ExecutionSummary{
+	summary1 := ExecutionSummary{
 		StartTime: time.Now(),
 		Processed: []FileProcessInfo{
 			{Path: "file1.txt", Size: 100, Hash: "a1b2c3d4e5f6g7h8a1b2c3d4e5f6g7h8"},
@@ -49,26 +51,52 @@ func TestCustomLogger_LogExecution(t *testing.T) {
 		},
 	}
 
-	if err := logger.LogExecution(summary); err != nil {
+	if err := logger.LogExecution(summary1); err != nil {
 		t.Fatalf("LogExecution failed: %v", err)
+	}
+
+	summary2 := ExecutionSummary{
+		StartTime: time.Now(),
+		Processed: []FileProcessInfo{
+			{Path: "file3.txt", Size: 300, Hash: "c3d4e5f6g7h8i9j0c3d4e5f6g7h8i9j0"},
+		},
+	}
+
+	if err := logger.LogExecution(summary2); err != nil {
+		t.Fatalf("LogExecution second cycle failed: %v", err)
 	}
 
 	// Check if activity log was created
 	files, _ := os.ReadDir(testDir)
 	found := false
+	var activityFileName string
 	for _, f := range files {
 		if strings.Contains(f.Name(), "test_activity_") {
+			if found {
+				t.Errorf("expected only one activity log file, but found multiple: %s and %s", activityFileName, f.Name())
+			}
 			found = true
+			activityFileName = f.Name()
+
 			content, _ := os.ReadFile(filepath.Join(testDir, f.Name()))
 			sContent := string(content)
 			if !strings.Contains(sContent, "# Status") {
 				t.Errorf("log missing # Status section")
 			}
 			if !strings.Contains(sContent, "file1.txt|100|a1b2c3d4e5f6g7h8a1b2c3d4e5f6g7h8") {
-				t.Errorf("log missing processed file info")
+				t.Errorf("log missing first cycle processed file info")
 			}
 			if !strings.Contains(sContent, "file2.txt in error|200|b2c3d4e5f6g7h8i9b2c3d4e5f6g7h8i9|some error") {
-				t.Errorf("log missing error file info or incorrect format")
+				t.Errorf("log missing first cycle error file info or incorrect format")
+			}
+			if !strings.Contains(sContent, "file3.txt|300|c3d4e5f6g7h8i9j0c3d4e5f6g7h8i9j0") {
+				t.Errorf("log missing second cycle processed file info")
+			}
+
+			// Verify name format (only YYYYMMDD, no HHMMSS)
+			expectedName := "test_activity_" + time.Now().Format("20060102") + ".log"
+			if f.Name() != expectedName {
+				t.Errorf("expected activity log file name %s, got %s", expectedName, f.Name())
 			}
 		}
 	}
@@ -150,7 +178,7 @@ func TestCustomLogger_PurgeOldLogs(t *testing.T) {
 	}
 
 	// Create an old activity log file
-	oldActivityLog := filepath.Join(testDir, "test_activity_20200101-120000.log")
+	oldActivityLog := filepath.Join(testDir, "test_activity_20200101.log")
 	if err := os.WriteFile(oldActivityLog, []byte("old activity"), 0o644); err != nil {
 		t.Fatalf("failed to create old activity log: %v", err)
 	}

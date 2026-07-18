@@ -92,9 +92,9 @@ The application implements a dual-track logging system (configurable via CLI or 
 - **System Logs (Daily)**: Tracks process-level events (start, stop, OS issues).
   - Format: `base_process_YYYYMMDD.log`
   - Integration: Mirrored to OS system logs (EventLog on Windows, Syslog on Linux).
-- **Activity Logs (Per Execution)**: Detailed report of data movement.
-  - Format: `base_activity_YYYYMMDD-HHMMSS.log`
-  - Structure: Includes a #Status summary (total, OK, error) and categorized lists of files with size and XXH3-128 hash.
+- **Activity Logs (Daily)**: Detailed report of data movement.
+  - Format: `base_activity_YYYYMMDD.log`
+  - Structure: Includes a #Status summary (total, OK, error) and categorized lists of files with size and XXH3-128 hash. Multiple execution cycles within the same day are appended to this file.
 
 - **Log Retention**: If `log_retention` > 0, the engine automatically purges both process and activity logs older than the specified number of days. Purge executes once a day at 00:00:00.
 

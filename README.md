@@ -250,9 +250,9 @@ DirPoller implements a dual-track logging system to separate operational events 
     - **System Integration**: These events are always logged to the **Windows Application Event Log** (Source: `DirPoller`) or **Linux Syslog/Journald**. If `-log` is specified, they are also mirrored to the daily process log file.
     - **Naming**: `base_process_YYYYMMDD.log`
     - **Format**: `date stamp|message`
-2.  **Activity Log (Per Execution)**: Detailed report of files discovered, verified, and processed in a single cycle. Includes individual file integrity or action errors.
-    - **System Integration**: Activity logs are **NOT** logged to the system event log. They are file-system ONLY (requires `-log` or JSON config).
-    - **Naming**: `base_activity_YYYYMMDD-HHMMSS.log`
+2.  **Activity Log (Daily)**: Detailed report of files discovered, verified, and processed across all execution cycles during the day. Includes individual file integrity or action errors.
+    - **System Integration**: Activity logs are **NOT** logged to the system event log. They are file-system ONLY (requires `-log` or JSON config). Multiple execution cycles in the same day are appended to the same daily file.
+    - **Naming**: `base_activity_YYYYMMDD.log`
     - **Format**: Structured sections for Status, Successes, and Errors. Includes XXH3-128 hashes for all processed files.
 
 #### Example: System Process Log
@@ -264,7 +264,7 @@ DirPoller implements a dual-track logging system to separate operational events 
 ```
 
 #### Example: Activity Log
-`C:\Logs\poller_activity_20260310-080005.log`
+`C:\Logs\poller_activity_20260310.log`
 ```text
 # Status
 2026-03-10 08:00:05|total number of files picked up: 3

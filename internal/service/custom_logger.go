@@ -116,7 +116,7 @@ func (l *CustomLogger) LogProcess(msg string) error {
 //
 // Data Flow:
 // 1. Filter: Skips log generation if no files were picked up or errored.
-// 2. File Construction: Builds a unique filename: base_activity_YYYYMMDD-HHMMSS.log.
+// 2. File Construction: Builds a daily filename: base_activity_YYYYMMDD.log.
 // 3. Reporting: Writes categorized sections for Summary, Successes, and Errors.
 func (l *CustomLogger) LogExecution(summary ExecutionSummary) error {
 	l.mu.Lock()
@@ -134,20 +134,26 @@ func (l *CustomLogger) LogExecution(summary ExecutionSummary) error {
 		return fmt.Errorf("absolute log_name required: %s", l.logBaseName)
 	}
 
-	timestamp := time.Now().Format("20060102-150405")
+	timestamp := time.Now().Format("20060102")
 	ext := filepath.Ext(l.logBaseName)
 	base := strings.TrimSuffix(l.logBaseName, ext)
 	logFileName := fmt.Sprintf("%s_activity_%s%s", base, timestamp, ext)
 
-	// Create new file for this execution cycle
+	// Open or create the daily activity log file in append mode
 	// #nosec G304 - Log file name is constructed from safe base name and timestamp
-	f, err := os.OpenFile(filepath.Clean(logFileName), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(filepath.Clean(logFileName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		return fmt.Errorf("[Logger:LogExecution] failed to create activity log file: %w", err)
+		return fmt.Errorf("[Logger:LogExecution] failed to open activity log file: %w", err)
 	}
 	defer func() {
 		_ = f.Close()
 	}()
+
+	// If the file already has content, prepend a blank line to separate cycles
+	stat, err := f.Stat()
+	if err == nil && stat.Size() > 0 {
+		_, _ = fmt.Fprintln(f)
+	}
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 
