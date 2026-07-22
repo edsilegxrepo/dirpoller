@@ -667,4 +667,79 @@ func TestConfigScaleSettings(t *testing.T) {
 			t.Errorf("expected max_verification_workers error, got %v", err)
 		}
 	})
+
+	t.Run("DisabledIntegrity_AlgorithmNone", func(t *testing.T) {
+		cfg := &Config{
+			Poll:      PollConfig{Directory: testDir, Algorithm: PollInterval},
+			Integrity: IntegrityConfig{Algorithm: IntegrityNone},
+			Action: ActionConfig{
+				Type: ActionSFTP,
+				SFTP: SFTPConfig{Host: "h", Username: "u", EncryptedPassword: "p", RemotePath: "/r"},
+				PostProcess: PostProcessConfig{
+					Action:      PostActionDelete,
+					ArchivePath: testDir,
+				},
+			},
+		}
+		setDefaults(cfg)
+		if cfg.Integrity.Algorithm != IntegrityNone {
+			t.Errorf("expected IntegrityNone, got %s", cfg.Integrity.Algorithm)
+		}
+		if cfg.Integrity.VerificationAttempts != 0 {
+			t.Errorf("expected VerificationAttempts 0, got %d", cfg.Integrity.VerificationAttempts)
+		}
+		if err := validate(cfg); err != nil {
+			t.Errorf("validation failed for IntegrityNone: %v", err)
+		}
+	})
+
+	t.Run("DisabledIntegrity_AttemptsZero", func(t *testing.T) {
+		cfg := &Config{
+			Poll:      PollConfig{Directory: testDir, Algorithm: PollInterval},
+			Integrity: IntegrityConfig{Algorithm: IntegritySize, VerificationAttempts: 0, VerificationInterval: 0},
+			Action: ActionConfig{
+				Type: ActionSFTP,
+				SFTP: SFTPConfig{Host: "h", Username: "u", EncryptedPassword: "p", RemotePath: "/r"},
+				PostProcess: PostProcessConfig{
+					Action:      PostActionDelete,
+					ArchivePath: testDir,
+				},
+			},
+		}
+		setDefaults(cfg)
+		if cfg.Integrity.Algorithm != IntegrityNone {
+			t.Errorf("expected IntegrityNone for attempts=0, got %s", cfg.Integrity.Algorithm)
+		}
+		if cfg.Integrity.VerificationAttempts != 0 {
+			t.Errorf("expected VerificationAttempts 0, got %d", cfg.Integrity.VerificationAttempts)
+		}
+		if err := validate(cfg); err != nil {
+			t.Errorf("validation failed for attempts=0: %v", err)
+		}
+	})
+
+	t.Run("DisabledIntegrity_AlgorithmDisabled", func(t *testing.T) {
+		cfg := &Config{
+			Poll:      PollConfig{Directory: testDir, Algorithm: PollInterval},
+			Integrity: IntegrityConfig{Algorithm: "disabled"},
+			Action: ActionConfig{
+				Type: ActionSFTP,
+				SFTP: SFTPConfig{Host: "h", Username: "u", EncryptedPassword: "p", RemotePath: "/r"},
+				PostProcess: PostProcessConfig{
+					Action:      PostActionDelete,
+					ArchivePath: testDir,
+				},
+			},
+		}
+		setDefaults(cfg)
+		if cfg.Integrity.Algorithm != IntegrityNone {
+			t.Errorf("expected IntegrityNone for algorithm 'disabled', got %s", cfg.Integrity.Algorithm)
+		}
+		if cfg.Integrity.VerificationAttempts != 0 {
+			t.Errorf("expected VerificationAttempts 0, got %d", cfg.Integrity.VerificationAttempts)
+		}
+		if err := validate(cfg); err != nil {
+			t.Errorf("validation failed for 'disabled': %v", err)
+		}
+	})
 }

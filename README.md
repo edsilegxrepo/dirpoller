@@ -39,9 +39,9 @@ This section provides a comprehensive reference for all configuration directives
 | **Poll** | `value` | `poll` | Parameter for the chosen algorithm. | `0` | `interval`: seconds (int). `batch`: file count (int). `trigger`: file pattern (string). |
 | **Poll** | `batch_timeout_seconds` | `poll` | Force processing timeout for batch/trigger. | `600` | Applied when algorithm is `batch` or `trigger`. |
 | **Poll** | `max_batch_size` | `poll` | Maximum number of files processed in a single batch. | `1000` | Constraint: must be between `100` and `10000` inclusive. |
-| **Integrity** | `algorithm` | `integrity` | Method to verify file stability. | `timestamp` | Supported: `hash` (XXH3-128), `timestamp`, `size`. |
-| **Integrity** | `attempts` | `integrity` | Number of stability checks. | `1` | Must be a positive integer. |
-| **Integrity** | `interval` | `integrity` | Seconds between stability checks. | `5` | Must be a positive integer. |
+| **Integrity** | `algorithm` | `integrity` | Method to verify file stability. | `timestamp` | Supported: `hash` (XXH3-128), `timestamp`, `size`, `none` (or `disabled`). |
+| **Integrity** | `attempts` | `integrity` | Number of stability checks. | `1` | Must be an integer $\ge 0$. Set to `0` to disable integrity verification. |
+| **Integrity** | `interval` | `integrity` | Seconds between stability checks. | `5` | Must be an integer $\ge 0$. Ignored if integrity checking is disabled. |
 | **Action** | `type` | `action` | The processing engine to execute. | **Required** | Supported: `sftp`, `script`. |
 | **Action** | `concurrent_connections`| `action` | Size of the worker pool for parallel tasks. | `CPU x 2` | Must be a positive integer. |
 | **Post-Process** | `action` | `action.post_process`| Lifecycle step after successful action. | `delete` | Supported: `delete`, `move_archive`, `move_compress`. |
@@ -173,15 +173,27 @@ A safety gate that ensures files are fully written and closed by the source proc
 
 | Property | Type | Default | Logic / Purpose |
 | :--- | :--- | :--- | :--- |
-| `algorithm` | String | `timestamp` | The property to monitor for stability: `hash`, `timestamp`, or `size`. |
-| `attempts` | Integer | `1` | Number of consecutive checks where the property must remain identical for the file to be considered "stable". |
-| `interval` | Integer | `5` | Seconds to wait between each verification attempt. |
+| `algorithm` | String | `timestamp` | The property to monitor for stability: `hash`, `timestamp`, `size`, or `none` (`disabled`). |
+| `attempts` | Integer | `1` | Number of consecutive checks where the property must remain identical for the file to be considered "stable". Set to `0` to disable integrity checks. |
+| `interval` | Integer | `5` | Seconds to wait between each verification attempt (ignored if `algorithm` is `none` or `attempts` is `0`). |
 
 **Verification Flow:**
-1.  **Lock Check**: 
+1.  **Short-Circuit Check (Disabled Mode)**:
+    - If `algorithm` is set to `"none"` (or `"disabled"`), or `attempts` is set to `0`, integrity verification is **bypassed completely**.
+    - Skips OS lock checks, `os.Stat` sampling, and interval delays, returning `verified = true` immediately.
+2.  **Lock Check**: 
     - **Windows**: Attempts to open the file with exclusive access (`FILE_SHARE_NONE`) using native `CreateFile`. If Windows reports a sharing violation, the file is skipped.
     - **Linux**: Uses `flock` (`LOCK_EX|LOCK_NB`) to detect active writes or locks.
-2.  **Stability Check**: Once unlocked/available, the chosen `algorithm` is used. If the property (e.g., file size) changes between any of the `attempts`, the counter resets.
+3.  **Stability Check**: Once unlocked/available, the chosen `algorithm` is used. If the property (e.g., file size) changes between any of the `attempts`, the counter resets.
+
+**Disabling Integrity Verification Example:**
+```json
+"integrity": {
+    "algorithm": "none",
+    "attempts": 0,
+    "interval": 0
+}
+```
 
 ---
 

@@ -1348,3 +1348,133 @@ func TestBatchPoller_ResilientFallbackScan(t *testing.T) {
 		t.Fatal("timeout waiting for fallback scan to process files")
 	}
 }
+
+func TestIntervalPoller_InFlightFiltering(t *testing.T) {
+	testDir := GetTestDir("IntervalInFlight")
+	_ = os.MkdirAll(testDir, 0o755)
+
+	f1 := filepath.Join(testDir, "file1.txt")
+	f2 := filepath.Join(testDir, "file2.txt")
+	_ = os.WriteFile(f1, []byte("data1"), 0o600)
+	_ = os.WriteFile(f2, []byte("data2"), 0o600)
+
+	AddInFlight(f1)
+	defer RemoveInFlight(f1)
+
+	cfg := &config.Config{
+		Poll: config.PollConfig{
+			Directory: testDir,
+			Algorithm: config.PollInterval,
+			Value:     1,
+		},
+	}
+	ip := NewIntervalPoller(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	results := make(chan []string, 1)
+	err := ip.poll(ctx, results)
+	if err != nil {
+		t.Fatalf("poll failed: %v", err)
+	}
+
+	select {
+	case batch := <-results:
+		if len(batch) != 1 {
+			t.Fatalf("expected batch size 1 (filtering in-flight file), got %d", len(batch))
+		}
+		if batch[0] != f2 {
+			t.Errorf("expected only f2 (%s), got %s", f2, batch[0])
+		}
+	default:
+		t.Fatal("expected results channel to have ready files")
+	}
+}
+
+func TestIntervalPoller_ExclusionFiltering(t *testing.T) {
+	testDir := GetTestDir("IntervalExclusion")
+	_ = os.MkdirAll(testDir, 0o755)
+
+	f1 := filepath.Join(testDir, "ex_file1.txt")
+	f2 := filepath.Join(testDir, "ex_file2.txt")
+	_ = os.WriteFile(f1, []byte("data1"), 0o600)
+	_ = os.WriteFile(f2, []byte("data2"), 0o600)
+
+	ExcludePath(f1, 10*time.Second)
+
+	cfg := &config.Config{
+		Poll: config.PollConfig{
+			Directory: testDir,
+			Algorithm: config.PollInterval,
+			Value:     1,
+		},
+	}
+	ip := NewIntervalPoller(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	results := make(chan []string, 1)
+	err := ip.poll(ctx, results)
+	if err != nil {
+		t.Fatalf("poll failed: %v", err)
+	}
+
+	select {
+	case batch := <-results:
+		if len(batch) != 1 {
+			t.Fatalf("expected batch size 1 (filtering excluded file), got %d", len(batch))
+		}
+		if batch[0] != f2 {
+			t.Errorf("expected only f2 (%s), got %s", f2, batch[0])
+		}
+	default:
+		t.Fatal("expected results channel to have ready files")
+	}
+}
+
+func TestBatchPoller_WatcherOverflowRecovery(t *testing.T) {
+	testDir := GetTestDir("BatchOverflowRecovery")
+	_ = os.MkdirAll(testDir, 0o755)
+
+	f1 := filepath.Join(testDir, "overflow1.txt")
+	_ = os.WriteFile(f1, []byte("data"), 0o600)
+	defer func() { _ = os.Remove(f1) }()
+
+	cfg := &config.Config{
+		Poll: config.PollConfig{
+			Directory:           testDir,
+			Algorithm:           config.PollBatch,
+			Value:               1,
+			MaxBatchSize:        10,
+			BatchTimeoutSeconds: 60,
+		},
+	}
+	bp := NewBatchPoller(cfg)
+	mw := newMockWatcher()
+	bp.newWatcher = func() (Watcher, error) { return mw, nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	results := make(chan []string, 1)
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- bp.Start(ctx, results)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	mw.errors <- fmt.Errorf("runtime error: fsnotify: queue or buffer overflow")
+
+	select {
+	case batch := <-results:
+		if len(batch) == 0 {
+			t.Errorf("expected catch-up scan batch after overflow event, got empty")
+		}
+	case err := <-errChan:
+		t.Fatalf("BatchPoller exited prematurely on overflow error: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for overflow catch-up scan")
+	}
+}

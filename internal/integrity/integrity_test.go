@@ -382,4 +382,40 @@ func TestVerifier_ClearCache(t *testing.T) {
 	}
 }
 
+func TestIntegrityDisabled(t *testing.T) {
+	cfg := &config.Config{
+		Integrity: config.IntegrityConfig{
+			Algorithm:            config.IntegrityNone,
+			VerificationAttempts: 0,
+		},
+	}
+	v := NewVerifier(cfg)
+
+	// Even for a non-existent file path, Verify should immediately return true, nil
+	ok, err := v.Verify(context.Background(), "/non/existent/file.txt")
+	if err != nil {
+		t.Fatalf("expected no error when integrity is disabled, got %v", err)
+	}
+	if !ok {
+		t.Errorf("expected Verify to return true when disabled, got false")
+	}
+}
+
+func TestIntegrityMissingFile(t *testing.T) {
+	cfg := &config.Config{
+		Integrity: config.IntegrityConfig{
+			Algorithm:            config.IntegritySize,
+			VerificationAttempts: 1,
+			VerificationInterval: 1,
+		},
+	}
+	v := NewVerifier(cfg)
+
+	// When a file is missing, Verify with active integrity checks should return an error
+	_, err := v.Verify(context.Background(), filepath.Join(t.TempDir(), "nonexistent.txt"))
+	if err == nil {
+		t.Error("expected error for missing file during active verification, got nil")
+	}
+}
+
 // [Removed redundant local mocks: mockOSUtils - now using testutils.MockOSUtils]

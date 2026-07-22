@@ -48,6 +48,8 @@ const (
 	IntegrityTimestamp IntegrityAlgorithm = "timestamp"
 	// IntegritySize verifies consistency by checking the file size.
 	IntegritySize IntegrityAlgorithm = "size"
+	// IntegrityNone disables integrity checking.
+	IntegrityNone IntegrityAlgorithm = "none"
 )
 
 // ActionType defines the primary operation to perform on discovered and verified files.
@@ -219,14 +221,19 @@ func setDefaults(cfg *Config) {
 		}
 	}
 
-	if cfg.Integrity.Algorithm == "" {
-		cfg.Integrity.Algorithm = IntegrityTimestamp
-	}
-	if cfg.Integrity.VerificationAttempts == 0 {
-		cfg.Integrity.VerificationAttempts = 1
-	}
-	if cfg.Integrity.VerificationInterval == 0 {
-		cfg.Integrity.VerificationInterval = 5
+	if cfg.Integrity.Algorithm == IntegrityNone || cfg.Integrity.Algorithm == "disabled" || (cfg.Integrity.Algorithm != "" && cfg.Integrity.VerificationAttempts == 0) {
+		cfg.Integrity.Algorithm = IntegrityNone
+		cfg.Integrity.VerificationAttempts = 0
+	} else {
+		if cfg.Integrity.Algorithm == "" {
+			cfg.Integrity.Algorithm = IntegrityTimestamp
+		}
+		if cfg.Integrity.VerificationAttempts == 0 {
+			cfg.Integrity.VerificationAttempts = 1
+		}
+		if cfg.Integrity.VerificationInterval == 0 {
+			cfg.Integrity.VerificationInterval = 5
+		}
 	}
 
 	if cfg.Action.ConcurrentConnections == 0 {
@@ -295,7 +302,7 @@ func validate(cfg *Config) error {
 	}
 
 	switch cfg.Integrity.Algorithm {
-	case IntegrityHash, IntegrityTimestamp, IntegritySize:
+	case IntegrityHash, IntegrityTimestamp, IntegritySize, IntegrityNone:
 	default:
 		return fmt.Errorf("unsupported integrity algorithm: %s", cfg.Integrity.Algorithm)
 	}

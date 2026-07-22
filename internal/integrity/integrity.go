@@ -73,7 +73,23 @@ func NewVerifier(cfg *config.Config) *Verifier {
 //  3. Interval Wait: Pauses execution for the configured VerificationInterval.
 //  4. Comparison: Re-samples the property and compares with the previous value.
 //  5. Success: Returns true if the property is stable across all configured VerificationAttempts.
+//
+// Verify checks file consistency across multiple attempts.
+//
+// Logic:
+//  1. Short-circuit: If integrity checking is disabled (IntegrityNone or attempts <= 0),
+//     returns true immediately without performing lock or stat checks.
+//  2. Lock Check: Uses platform-native APIs (e.g., Windows CreateFile with FILE_SHARE_NONE)
+//     to see if the file is currently held by another process.
+//  3. Initial Sample: Captures the configured integrity property (Size, Timestamp, or XXH3-128 Hash).
+//  4. Interval Wait: Pauses execution for the configured VerificationInterval.
+//  5. Comparison: Re-samples the property and compares with the previous value.
+//  6. Success: Returns true if the property is stable across all configured VerificationAttempts.
 func (v *Verifier) Verify(ctx context.Context, path string) (bool, error) {
+	if v.cfg != nil && (v.cfg.Integrity.Algorithm == config.IntegrityNone || v.cfg.Integrity.VerificationAttempts <= 0) {
+		return true, nil
+	}
+
 	for i := 0; i < v.cfg.Integrity.VerificationAttempts; i++ {
 		// Acquire I/O slot (with context cancellation check)
 		select {

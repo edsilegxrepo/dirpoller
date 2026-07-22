@@ -78,9 +78,15 @@ func (p *IntervalPoller) poll(ctx context.Context, results chan<- []string) erro
 	if err != nil {
 		return err
 	}
-	if len(files) > 0 {
+	var readyFiles []string
+	for _, f := range files {
+		if !IsInFlight(f) && !IsExcluded(f) {
+			readyFiles = append(readyFiles, f)
+		}
+	}
+	if len(readyFiles) > 0 {
 		select {
-		case results <- files:
+		case results <- readyFiles:
 		case <-ctx.Done():
 			return ctx.Err()
 		}

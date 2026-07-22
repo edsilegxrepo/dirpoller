@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.4] - 2026-07-18
+## [1.0.4] - 2026-07-21
+
+### Added
+- **Disabling File Integrity Verification**: Added support for `"algorithm": "none"` (or `"disabled"`) and setting `"attempts": 0` (or `"interval": 0`) in `IntegrityConfig` (Resolves #9). When disabled, `Verifier.Verify()` short-circuits execution immediately, bypassing OS file lock checks (`IsLocked`), `os.Stat` calls, and verification interval delays.
+- **Watcher Event Overflow Recovery**: Added graceful event queue overflow recovery to `BatchPoller` and `TriggerPoller` for high-volume file transfers (Resolves #7). When kernel event buffers overflow (`fsnotify: queue or buffer overflow`), pollers now log a warning and run an immediate catch-up directory scan to recover dropped files without crashing or entering 5-second engine restart loops.
+
+### Fixed
+- **Interval Poller In-Flight & Exclusion Filtering**: Updated `IntervalPoller.poll()` to filter out files currently in-flight (`IsInFlight`) or temporarily excluded (`IsExcluded`) (Resolves #8). This prevents consecutive polling interval ticks from re-dispatching files that are actively being processed by a running batch, eliminating false `[Integrity:Verify] failed to check lock ... file specified not found` activity log errors.
+- **Batch & Trigger Poller Backlog Stall Prevention**: Removed restrictive `if len(p.files) == 0` guard checks from backlog tickers in `BatchPoller` and `TriggerPoller`. This fixes a critical bug where high-volume file backlogs (> `MaxBatchSize`) stopped draining after the first cycle whenever a partial batch remained in memory.
 
 ### Changed
 - **Daily Activity Logging**: Refactored the custom activity logging system to group execution summaries into a single daily log file (`base_activity_YYYYMMDD.log`) instead of creating a new file per execution cycle. Execution cycles within the same day are appended to the daily file and separated by a blank line for readability. This reduces log file accumulation, improves directory traversal performance, and decreases filesystem fragmentation.

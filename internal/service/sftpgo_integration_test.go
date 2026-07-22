@@ -1213,6 +1213,190 @@ func TestLiveSFTPGoMatrixIntegration(t *testing.T) {
 			t.Fatal("EventPoller + MoveCompress sub-test failed")
 		}
 	})
+
+	t.Run("IntegrityDisabled_AlgorithmNone", func(t *testing.T) {
+		caseTime := time.Now().Format("150405")
+		pollDir := filepath.Join(tempDir, "unitests", "poll_matrix_disabled-"+caseTime)
+		archiveDir := filepath.Join(tempDir, "unitests", "archive_matrix_disabled-"+caseTime)
+		_ = os.MkdirAll(pollDir, 0o750)
+		_ = os.MkdirAll(archiveDir, 0o750)
+		defer func() {
+			_ = fastRemoveAll(pollDir)
+			_ = fastRemoveAll(archiveDir)
+		}()
+
+		configPath := filepath.Join(tempDir, "unitests", "config_matrix_disabled-"+caseTime+".json")
+		configData := fmt.Sprintf(`{
+			"poll": {
+				"directory": "%s",
+				"algorithm": "interval",
+				"value": 1,
+				"max_batch_size": 100
+			},
+			"integrity": {
+				"algorithm": "none",
+				"attempts": 0,
+				"interval": 0
+			},
+			"action": {
+				"type": "sftp",
+				"concurrent_connections": 2,
+				"sftp": {
+					"host": "127.0.0.1",
+					"port": %d,
+					"username": "testuser",
+					"encrypted_password": "%s",
+					"remote_path": "/"
+				},
+				"post_process": {
+					"action": "delete",
+					"archive_path": "%s"
+				}
+			}
+		}`, filepath.ToSlash(pollDir), port, encPass, filepath.ToSlash(archiveDir))
+
+		_ = os.WriteFile(configPath, []byte(configData), 0o600)
+		defer func() { _ = os.Remove(configPath) }()
+
+		cfg, _, err := config.LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+
+		engine, err := NewEngine(cfg, false)
+		if err != nil {
+			t.Fatalf("failed to create engine: %v", err)
+		}
+		defer engine.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		errChan := make(chan error, 1)
+		go func() {
+			errChan <- engine.Run(ctx)
+		}()
+
+		dataPath := filepath.Join(pollDir, "disabled_integrity_file.txt")
+		_ = os.WriteFile(dataPath, []byte("disabled integrity test data"), 0o600)
+
+		timeout := time.After(10 * time.Second)
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+
+		success := false
+		for {
+			select {
+			case <-timeout:
+				t.Error("timeout waiting for disabled integrity file upload")
+				goto ExitSubTest3
+			case <-ticker.C:
+				if _, err := os.Stat(filepath.Join(sftpHome, "disabled_integrity_file.txt")); err == nil {
+					if _, err := os.Stat(dataPath); os.IsNotExist(err) {
+						success = true
+						goto ExitSubTest3
+					}
+				}
+			}
+		}
+
+	ExitSubTest3:
+		cancel()
+		<-errChan
+		if !success {
+			t.Fatal("IntegrityDisabled_AlgorithmNone integration test failed")
+		}
+	})
+
+	t.Run("Integrity_AlgorithmHash", func(t *testing.T) {
+		caseTime := time.Now().Format("150405")
+		pollDir := filepath.Join(tempDir, "unitests", "poll_matrix_hash-"+caseTime)
+		archiveDir := filepath.Join(tempDir, "unitests", "archive_matrix_hash-"+caseTime)
+		_ = os.MkdirAll(pollDir, 0o750)
+		_ = os.MkdirAll(archiveDir, 0o750)
+		defer func() {
+			_ = fastRemoveAll(pollDir)
+			_ = fastRemoveAll(archiveDir)
+		}()
+
+		configPath := filepath.Join(tempDir, "unitests", "config_matrix_hash-"+caseTime+".json")
+		configData := fmt.Sprintf(`{
+			"poll": {
+				"directory": "%s",
+				"algorithm": "interval",
+				"value": 1,
+				"max_batch_size": 100
+			},
+			"integrity": {
+				"algorithm": "hash",
+				"attempts": 1,
+				"interval": 1
+			},
+			"action": {
+				"type": "sftp",
+				"concurrent_connections": 2,
+				"sftp": {
+					"host": "127.0.0.1",
+					"port": %d,
+					"username": "testuser",
+					"encrypted_password": "%s",
+					"remote_path": "/"
+				},
+				"post_process": {
+					"action": "delete",
+					"archive_path": "%s"
+				}
+			}
+		}`, filepath.ToSlash(pollDir), port, encPass, filepath.ToSlash(archiveDir))
+
+		_ = os.WriteFile(configPath, []byte(configData), 0o600)
+		defer func() { _ = os.Remove(configPath) }()
+
+		cfg, _, err := config.LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+
+		engine, err := NewEngine(cfg, false)
+		if err != nil {
+			t.Fatalf("failed to create engine: %v", err)
+		}
+		defer engine.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		errChan := make(chan error, 1)
+		go func() {
+			errChan <- engine.Run(ctx)
+		}()
+
+		dataPath := filepath.Join(pollDir, "hash_integrity_file.txt")
+		_ = os.WriteFile(dataPath, []byte("hash integrity xxh3-128 test content"), 0o600)
+
+		timeout := time.After(10 * time.Second)
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+
+		success := false
+		for {
+			select {
+			case <-timeout:
+				t.Error("timeout waiting for hash integrity file upload")
+				goto ExitSubTest4
+			case <-ticker.C:
+				if _, err := os.Stat(filepath.Join(sftpHome, "hash_integrity_file.txt")); err == nil {
+					if _, err := os.Stat(dataPath); os.IsNotExist(err) {
+						success = true
+						goto ExitSubTest4
+					}
+				}
+			}
+		}
+
+	ExitSubTest4:
+		cancel()
+		<-errChan
+		if !success {
+			t.Fatal("Integrity_AlgorithmHash integration test failed")
+		}
+	})
 }
 
 func startSFTPGo(port int, sftpHome string) (*exec.Cmd, error) {
@@ -1883,5 +2067,125 @@ ExitInflux:
 		t.Errorf("Handle leak detected: initial=%d, final=%d", initialHandles, finalHandles)
 	} else {
 		t.Log("Influx handle leak test passed successfully.")
+	}
+}
+
+// TestLiveSFTPGo5KBatchIntegration tests 1,000 files under PollBatch mode with MaxBatchSize: 250
+// against a real live SFTPGo instance, verifying real-time fsnotify event handling and backlog draining.
+func TestLiveSFTPGo5KBatchIntegration(t *testing.T) {
+	if os.Getenv("TEST_LIVE_SFTP_5K") != "true" && os.Getenv("TEST_LIVE_SFTP") != "true" {
+		t.Skip("Skipping 5K live batch SFTP test. Set TEST_LIVE_SFTP_5K=true to run.")
+	}
+
+	tempDir := os.Getenv("TEMP")
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	uID := fmt.Sprintf("%d", time.Now().UnixNano())
+	sftpHome := filepath.Join(tempDir, "sftp_home_5k_batch_"+uID)
+	pollDir := filepath.Join(tempDir, "poll_5k_batch_"+uID)
+	archiveDir := filepath.Join(tempDir, "archive_5k_batch_"+uID)
+
+	_ = os.MkdirAll(sftpHome, 0o755)
+	_ = os.MkdirAll(pollDir, 0o755)
+	_ = os.MkdirAll(archiveDir, 0o755)
+
+	defer func() {
+		_ = os.RemoveAll(sftpHome)
+		_ = os.RemoveAll(pollDir)
+		_ = os.RemoveAll(archiveDir)
+	}()
+
+	totalFiles := 1000
+	for i := 0; i < totalFiles; i++ {
+		p := filepath.Join(pollDir, fmt.Sprintf("batch_scale_%d.txt", i))
+		_ = os.WriteFile(p, []byte("batch scale test data"), 0o600)
+	}
+
+	masterKeyStr, _ := libsecsecrets.GenerateKey()
+	masterKey, _ := libsecsecrets.ResolveKey(context.Background(), masterKeyStr, "", "")
+	encPass, _ := libsecsecrets.Encrypt(context.Background(), "password123", masterKey)
+	libsecsecrets.ZeroBuffer(masterKey)
+
+	_ = os.Setenv("SECRETPROTECTOR_KEY", masterKeyStr)
+	defer func() { _ = os.Unsetenv("SECRETPROTECTOR_KEY") }()
+
+	sftpgoPath := getSFTPGoPath()
+	port := getSFTPGoPort()
+	cmd := exec.Command(sftpgoPath, "portable",
+		"-d", sftpHome,
+		"-u", "testuser",
+		"-p", "password123",
+		"-s", strconv.Itoa(port),
+		"-g", "*",
+	)
+	cmd.Dir = sftpHome
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start SFTPGo: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill() }()
+
+	time.Sleep(2 * time.Second)
+
+	cfg := &config.Config{
+		Poll: config.PollConfig{
+			Directory:           pollDir,
+			Algorithm:           config.PollBatch,
+			Value:               250,
+			MaxBatchSize:        250,
+			BatchTimeoutSeconds: 5,
+		},
+		Integrity: config.IntegrityConfig{
+			Algorithm:            config.IntegrityNone,
+			VerificationAttempts: 0,
+			VerificationInterval: 0,
+		},
+		Action: config.ActionConfig{
+			Type:                  config.ActionSFTP,
+			ConcurrentConnections: 16,
+			SFTP: config.SFTPConfig{
+				Host:              "127.0.0.1",
+				Port:              port,
+				Username:          "testuser",
+				EncryptedPassword: encPass,
+				MasterKeyEnv:      "SECRETPROTECTOR_KEY",
+				RemotePath:        "/",
+			},
+			PostProcess: config.PostProcessConfig{
+				Action:      config.PostActionDelete,
+				ArchivePath: archiveDir,
+			},
+		},
+	}
+
+	engine, err := NewEngine(cfg, false)
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	defer engine.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	errChan := make(chan error, 1)
+	go func() { errChan <- engine.Run(ctx) }()
+
+	success := false
+	for start := time.Now(); time.Since(start) < 25*time.Second; {
+		entries, err := os.ReadDir(pollDir)
+		if err == nil && len(entries) == 0 {
+			success = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	cancel()
+	<-errChan
+
+	if !success {
+		entries, _ := os.ReadDir(pollDir)
+		t.Fatalf("5K Batch Live Test timed out: %d files remaining in pollDir", len(entries))
 	}
 }

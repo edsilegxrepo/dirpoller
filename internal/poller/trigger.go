@@ -15,6 +15,7 @@ package poller
 import (
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -123,28 +124,26 @@ func (p *TriggerPoller) Start(ctx context.Context, results chan<- []string) erro
 			p.mu.Unlock()
 		case <-backlogTicker.C:
 			p.mu.Lock()
-			if len(p.files) == 0 {
-				backlog := p.scanBacklog()
-				if len(backlog) > 0 {
-					hasTrigger := false
-					for _, f := range backlog {
-						if p.isTriggerFile(f, pattern) {
-							hasTrigger = true
-						} else {
-							p.files[f] = struct{}{}
-						}
-					}
-					if hasTrigger && len(p.files) > 0 {
-						p.flush(ctx, results)
-					}
-					if len(backlog) >= p.cfg.Poll.MaxBatchSize {
-						p.hasBacklog = true
+			backlog := p.scanBacklog()
+			if len(backlog) > 0 {
+				hasTrigger := false
+				for _, f := range backlog {
+					if p.isTriggerFile(f, pattern) {
+						hasTrigger = true
 					} else {
-						p.hasBacklog = false
+						p.files[f] = struct{}{}
 					}
+				}
+				if hasTrigger && len(p.files) > 0 {
+					p.flush(ctx, results)
+				}
+				if len(backlog) >= p.cfg.Poll.MaxBatchSize {
+					p.hasBacklog = true
 				} else {
 					p.hasBacklog = false
 				}
+			} else {
+				p.hasBacklog = false
 			}
 			p.mu.Unlock()
 		case event, ok := <-watcher.Events():
@@ -169,7 +168,33 @@ func (p *TriggerPoller) Start(ctx context.Context, results chan<- []string) erro
 			if !ok {
 				return nil
 			}
-			return &ErrWatcherRuntime{Err: err}
+			errMsg := strings.ToLower(err.Error())
+			isOverflow := strings.Contains(errMsg, "overflow") ||
+				strings.Contains(errMsg, "short buffer") ||
+				strings.Contains(errMsg, "buffer limit") ||
+				strings.Contains(errMsg, "too many open files")
+
+			if isOverflow {
+				log.Printf("Warning: TriggerPoller directory watcher encountered overflow runtime error: %v. Initiating catch-up directory scan...\n", err)
+				p.mu.Lock()
+				backlog := p.scanBacklog()
+				if len(backlog) > 0 {
+					for _, f := range backlog {
+						if p.isTriggerFile(f, pattern) {
+							p.flush(ctx, results)
+							timeoutTicker.Reset(timeoutDuration)
+						} else {
+							p.files[f] = struct{}{}
+						}
+					}
+					if len(backlog) >= p.cfg.Poll.MaxBatchSize {
+						p.hasBacklog = true
+					}
+				}
+				p.mu.Unlock()
+			} else {
+				return &ErrWatcherRuntime{Err: err}
+			}
 		}
 	}
 }

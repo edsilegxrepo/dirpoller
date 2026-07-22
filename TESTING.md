@@ -6,20 +6,73 @@ This document describes the comprehensive testing strategy and implementation fo
 
 The DirPoller test suite is designed for high-fidelity simulation of system behaviors while maintaining strict isolation and cross-platform compatibility.
 
-### 1.1 Test Strategy
+### 1.1 Architectural Risk & Subsystem Pipeline
+The system maps core processing layers to their corresponding risk vectors and verification routines:
+
+```mermaid
+flowchart TD
+    subgraph Polling ["1. Polling Layer (Kernel Events & Scans)"]
+        A[Interval Poller]
+        B[Batch Poller]
+        C[Event Poller]
+        D[Trigger Poller]
+    end
+
+    subgraph Verification ["2. Integrity Layer (Disk I/O & Locks)"]
+        E[OS Lock Check]
+        F[Hash / Size / Timestamp / None]
+    end
+
+    subgraph Execution ["3. Action Layer (SFTP / Script)"]
+        G[Worker Pool & Concurrency]
+        H[SFTP Pipelined Writer]
+    end
+
+    subgraph Archive ["4. Post-Process Layer (Archiver)"]
+        I[Delete / Move / Compress]
+        J[Daily Retention Purge]
+    end
+
+    Polling -->|Dispatched File Slices| Verification
+    Verification -->|Verified Files| Execution
+    Execution -->|Completed Files| Archive
+```
+
+### 1.2 Test Strategy & Mocking Infrastructure
 The project employs a deliberate strategy to achieve 90%+ coverage by shifting from brittle OS-level manipulations to high-impact architectural refactorings. This approach focuses on:
 
-- **Mocking Infrastructure**: Introducing thin interface wrappers for core external dependencies:
-    - `internal/archive`: `ArchiveWriter` interface to wrap `tar.Writer` and `zstd.Writer` for injecting failures during I/O operations.
+- **Mocking Infrastructure**: Thin interface wrappers for core external dependencies:
+    - `internal/archive`: `ArchiveWriter` interface to wrap `tar.Writer` and `zstd.Writer` for injecting I/O failures.
     - `internal/poller`: `Watcher` interface for `fsnotify` to manually inject events and errors without physical file operations.
     - `internal/service`: Abstraction of `CustomLogger`, `PlatformLogger`, and `EngineRunner` to hit all logging and lifecycle failure paths.
-    - `internal/action`: Using `Dialer` and `SFTPClient` interfaces to simulate complex network and protocol failures. 
+    - `internal/action`: `Dialer` and `SFTPClient` interfaces to simulate network and protocol failures. 
 - **Efficiency Improvements**:
     - **Table-Driven Consolidation**: Combining multiple error path tests into single functions with multiple assertions.
     - **Synchronous Testing**: Using channel synchronization in mocks instead of `time.Sleep` to reduce test execution time.
-    - **Targeted Iteration**: Using `go test -run <TestName>` for rapid development, only running full coverage reports upon package completion.
+    - **Targeted Iteration**: Using `go test -run <TestName>` for rapid development.
 
-### 1.2 Component Testing Scenarios
+### 1.3 The 3-Tier Enterprise Testing Pipeline
+
+```mermaid
+graph TD
+    Tier1["Tier 1: Fast Unit & Edge Suite<br/>(Every Commit / PR < 30s)"]
+    Tier2["Tier 2: Combinatorial Integration Matrix<br/>(Nightly / Pre-Release ~ 5 mins)"]
+    Tier3["Tier 3: Chaos & Longevity Soak Suite<br/>(Weekly / Major Release ~ 3 hours)"]
+
+    Tier1 --> Tier2
+    Tier2 --> Tier3
+```
+
+- **Tier 1: Fast Unit & Proactive Edge Suite (PR Pipeline)**:
+  - Unit mocks + `proactive_edge_test.go` (Unicode/special filenames, 0-byte files, slow writer locks, goroutine baseline leak checks).
+  - Runs in **< 30 seconds**.
+- **Tier 2: Combinatorial Integration Matrix (Nightly / Pre-Release)**:
+  - Runs `sftpgo_integration_test.go` against a live SFTPGo instance across all 4 poller algorithms and all 4 integrity check modes (`timestamp`, `size`, `none`/`disabled`, `hash`).
+  - Includes `TestLiveSFTPGo5KBatchIntegration` verifying 1,000 files in `PollBatch` mode under 20-cycle backlog draining.
+- **Tier 3: Chaos & Continuous High-Velocity Influx Suite (Major Version Release)**:
+  - Runs `proactive_chaos_test.go` and `continuous_influx_test.go` testing mid-upload file deletion, transient network drops, multi-tick overlapping intervals, and 24-hour continuous stream processing.
+
+### 1.4 Component Testing Scenarios
 The suite is divided into logical components, each with specific testing objectives:
 
 - **Polling Engine (`internal/poller`)**: 
@@ -90,10 +143,16 @@ To ensure tests do not interfere with source code or production data, all tests 
 | **Polling** | `TestTriggerPoller` | Verify trigger file pattern and timeout. | Batch processed on trigger OR timeout. |
 | **Polling** | `TestTriggerPollerExactMatch` | Verify exact filename match for trigger. | Only exact filename triggers processing. |
 | **Polling** | `TestEventPollerCoalescing` | Verify fsnotify event micro-batch coalescing. | Rapid burst events (under 50ms) are grouped into a single batch slice. |
+| **Polling** | `TestIntervalPoller_InFlightFiltering` | Verify interval poller filters out files currently in-flight. | In-flight files skipped during interval polling scan. (Resolves #8) |
+| **Polling** | `TestIntervalPoller_ExclusionFiltering` | Verify interval poller filters out temporarily excluded files. | Excluded files skipped during interval polling scan. |
+| **Polling** | `TestBatchPoller_WatcherOverflowRecovery` | Verify `fsnotify` event buffer overflow recovery in batch mode. | Poller logs warning, runs catch-up scan, and continues running without crashing. (Resolves #7) |
+| **Polling** | `TestTriggerPoller_WatcherOverflowRecovery` | Verify `fsnotify` event buffer overflow recovery in trigger mode. | Poller logs warning, runs catch-up scan, and continues running without crashing. |
 | **Integrity** | `TestIntegrityLockCheck` | Verify file lock detection. | `IsLocked` returns true for held files; free for others. |
 | **Integrity** | `TestIntegrityHash` | Verify XXH3-128 consistency. | File verified after hash property is stable. |
 | **Integrity** | `TestIntegrityChangingFile` | Verify waiting for "quiet" file. | `Verify` returns false while file is still growing/changing. |
 | **Integrity** | `TestIntegrityTimestamp` | Verify mod-time consistency check. | File verified via timestamp stability algorithm. |
+| **Integrity** | `TestIntegrityDisabled` | Verify instant short-circuiting when integrity is disabled. | `Verify` returns `(true, nil)` instantly without stat/lock checks. (Resolves #9) |
+| **Integrity** | `TestIntegrityMissingFile` | Verify handling when files disappear during verification. | Verifier returns expected file error. |
 | **Integrity** | `TestVerifierCalculateHash` | Verify hash calculation logic. | Correct hash returned for test file content. |
 | **Integrity** | `TestVerifierUnsupportedAlgorithm` | Verify handling of unknown algorithms. | Error returned for invalid algorithm config. |
 | **Integrity** | `TestVerifier_NestedSemaphoreDeadlockPrevention` | Verify that nested semaphore acquisitions do not occur to prevent deadlocks. | Hashing verification succeeds using a semaphore of size 1. |
@@ -135,7 +194,7 @@ To ensure tests do not interfere with source code or production data, all tests 
 | **Service** | `TestEngine_ScheduledTasks_Cleanup` | Verify daily SFTP cleanup. | Cleanup triggered on day change branch. |
 | **Service** | `TestEngine_ProcessFiles_TableDriven` | Verify engine processing logic. | Files processed correctly according to engine rules. |
 | **Service** | `TestLiveSFTPGoIntegration` | Verify single-file upload against a real local SFTPGo server. | Successful connection, decryption, upload, and cleanup. |
-| **Service** | `TestLiveSFTPGoBatchIntegration` | Verify live batch polling uploads against SFTPGo. | Successful batch detection, upload, and cleanup. |
+| **Service** | `TestLiveSFTPGoMatrixIntegration` | Matrix integration suite testing all 4 integrity modes (`timestamp`, `size`, `none`/`disabled`, `hash`) against live SFTPGo. | All 4 integrity modes verified, uploaded, and processed cleanly against a live SFTPGo instance. |
 | **Service** | `TestLiveSFTPGo5KIntegration` | Simulate 5,000 files production load with active locking and SLAs. | Verifies, uploads, and archives 5k files under 30s. Locked files skipped and recovered. |
 | **Service** | `TestPurgeOldEntries` | Verify the shared `purgeOldEntries` logic with backdated files and subdirectories. | Expired files and directories are deleted while recent ones are retained. |
 | **Service** | `TestEngine_checkAndPurgeArchives` | Verify archive retention threshold calculations, calendar day gating, and preservation of the transaction staging folder. | Engine purges old archives once per calendar day based on configuration, while protecting the internal `.staging` folder from deletion. |
@@ -143,6 +202,18 @@ To ensure tests do not interfere with source code or production data, all tests 
 | **Service** | `TestLiveSFTPGoConcurrencyAndBackpressure` | Stress-test the engine's event poller backlog fallback scan under high-load concurrent writes. | All 200 files are verified, batched, and uploaded under restricted connection pools without stranding. |
 | **Service** | `TestLiveSFTPGoMidTransferDisconnectAndRecovery` | Verify self-healing circuit breaker recovery after a simulated socket disconnect. | Engine triggers backoff/open-circuit on loss, then auto-recovers uploads once SFTPGo restarts. |
 | **Service** | `TestLiveSFTPGoConstantInfluxAndHandleLeak` | Stream 500 files at high velocity (20 files/100ms) under concurrent verification/action workers. | All files are processed, reaped, and process handle counts remain stable without leaking descriptors. |
+| **Service (Proactive)** | `TestProactive_UnicodeAndSpecialFilenames` | Verify filenames containing spaces, `#`, `()`, leading dots, UTF-8 symbols (`ñ`, `测试`), and emojis (`📊`). | All special and unicode filenames verified and processed cleanly. |
+| **Service (Proactive)** | `TestProactive_ZeroByteFiles` | Verify verifier, size cache, and action handling on empty 0-byte files. | Zero-byte files verified and processed without division-by-zero or slice out-of-bounds panics. |
+| **Service (Proactive)** | `TestProactive_SlowWriterLockDetection` | Verify lock detection on a file being actively written to by a background thread over time. | Verifier detects active mutation and delays approval until writing completes. |
+| **Service (Proactive)** | `TestProactive_ResourceLeakCheck` | Verify engine goroutine baseline recovery before and after execution. | Goroutine count returns to baseline after engine shutdown without subroutine leaks. |
+| **Service (Proactive)** | `TestProactiveChaos_MidUploadFileDeletion` | Verify handling when an external process deletes a local file mid-flight. | Engine logs missing file gracefully, skips deleted file, and processes remaining batch files without worker pool crash. |
+| **Service (Proactive)** | `TestProactiveStress_MultiTickOverlappingInterval` | Stress-test overlapping interval poller ticks under low concurrency across 50 files. | `IsInFlight` filters out active files, preventing duplicate processing and lock error log noise. |
+| **Service (Proactive)** | `TestProactiveChaos_TransientNetworkRecovery` | Verify transient network failure recovery during action execution. | Source files preserved on error, error logged cleanly, and auto-recovers on retry cycle. |
+| **Service (Continuous Influx)** | `TestContinuousInflux_IntervalPoller` | Stream 100 files continuously (10 files/100ms) under `PollInterval`. | All files processed exactly once without duplicate dispatches or memory leaks. |
+| **Service (Continuous Influx)** | `TestContinuousInflux_BatchPoller` | Stream 150 files in rapid bursts under `PollBatch` with `MaxBatchSize: 20`. | Backlog ticker continuously flushes 20-file batches and drains trailing files without stalling. |
+| **Service (Continuous Influx)** | `TestContinuousInflux_EventPoller` | Stream 100 files with rapid-fire `fsnotify` write events under `PollEvent`. | Micro-batch coalescing and LRU cache eviction operate cleanly without missing events. |
+| **Service (Continuous Influx)** | `TestContinuousInflux_TriggerPoller` | Accumulate 50 data files continuously under `PollTrigger` before creating trigger file. | Data files held until trigger file arrives, then flushed completely. |
+| **Service (Continuous Influx)** | `TestContinuousInflux_GoroutineAndMemoryLeakCheck` | Run all 4 continuous influx poller tests and assert baseline goroutine recovery. | Zero goroutine or memory leaks after high-velocity continuous execution across all 4 poller modes. |
 | **CLI** | `TestMainFlags` | Verify flag parsing and overrides. | All flag combinations and config overrides handled correctly. |
 | **CLI** | `TestMain` | Verify main entry point logic. | Logic bridges correctly to internal run function. |
 | **CLI** | `TestIsAdmin` | Verify administrative check. | Function returns boolean without panicking. |
