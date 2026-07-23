@@ -56,7 +56,6 @@ logs/
 *.db
 data/
 db/
-testdata/
 testfiles/
 testsamples/
 
