@@ -18,7 +18,7 @@ package action
 
 import (
 	"context"
-	"criticalsys/secretprotector/pkg/libsecsecrets"
+	"criticalsys.net/secretprotector/pkg/libsecsecrets"
 
 	"criticalsys.net/dirpoller/internal/config"
 )

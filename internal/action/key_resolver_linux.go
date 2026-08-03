@@ -18,7 +18,7 @@ package action
 
 import (
 	"context"
-	"criticalsys/secretprotector/pkg/libsecsecrets"
+	"criticalsys.net/secretprotector/pkg/libsecsecrets"
 	"fmt"
 	"os"
 	"path/filepath"

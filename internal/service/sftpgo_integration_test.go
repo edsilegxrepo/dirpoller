@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"criticalsys/secretprotector/pkg/libsecsecrets"
+	"criticalsys.net/secretprotector/pkg/libsecsecrets"
 	"fmt"
 	"io"
 	"math/rand"

@@ -15,8 +15,8 @@ require (
 require github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 
 require (
-	criticalsys/secretprotector v0.0.0
+	criticalsys.net/secretprotector v0.0.0
 	github.com/kr/fs v0.1.0 // indirect
 )
 
-replace criticalsys/secretprotector => ../secretprotector
+replace criticalsys.net/secretprotector => ../secretprotector
