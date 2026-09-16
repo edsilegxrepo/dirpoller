@@ -37,7 +37,7 @@ var (
 // 2. Privilege Check: Ensures the user has root/sudo rights.
 // 3. Validation: Ensures a service name in 'unit@instance' format is provided.
 // 4. Execution: Calls service.InstallServiceLinux or service.RemoveServiceLinux.
-func handleWindowsService(cfg *config.Config, absConfigPath string, debug bool, install bool, remove bool, user string, pass string) (bool, int) {
+func handleWindowsService(cfg *config.Config, absConfigPath string, debug, install, remove bool, user, pass string) (bool, int) {
 	// For Linux, ServiceName is strictly expected to come from the -name CLI flag (which overrides cfg.ServiceName in main.go)
 
 	if install {

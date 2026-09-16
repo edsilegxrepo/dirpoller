@@ -18,10 +18,11 @@ package action
 
 import (
 	"context"
-	"criticalsys.net/secretprotector/pkg/libsecsecrets"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"criticalsys.net/secretprotector/pkg/libsecsecrets"
 
 	"criticalsys.net/dirpoller/internal/config"
 )

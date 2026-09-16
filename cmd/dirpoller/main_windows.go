@@ -42,7 +42,7 @@ var (
 // 2. Service Execution: If running as a service, starts the engine via service.RunService.
 // 3. Installation: If -install flag is set, creates a new Windows Service.
 // 4. Removal: If -remove flag is set, deletes an existing Windows Service.
-func handleWindowsService(cfg *config.Config, absConfigPath string, debug bool, install bool, remove bool, user string, pass string) (bool, int) {
+func handleWindowsService(cfg *config.Config, absConfigPath string, debug, install, remove bool, user, pass string) (bool, int) {
 	// Check if running as a service
 	isService, err := isWindowsService()
 	if err != nil {

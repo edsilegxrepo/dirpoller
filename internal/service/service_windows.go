@@ -103,7 +103,7 @@ loop:
 	}
 	changes <- svc.Status{State: svc.Stopped}
 	time.Sleep(100 * time.Millisecond) // Allow SCM to process the Stopped state before process exits
-	return
+	return ssec, errno
 }
 
 // RunService starts the Windows Service execution loop.
@@ -115,7 +115,7 @@ loop:
 // 1. Mode Selection: Runs in either debug mode or standard service mode.
 // 2. Event Routing: Forwards SCM control signals to the WindowsService handler.
 // 3. Error Recovery: Logs fatal service startup failures to the Windows Event Log.
-func RunService(name string, cfgPath string, isDebug bool) {
+func RunService(name, cfgPath string, isDebug bool) {
 	var err error
 	if isDebug {
 		err = debug.Run(name, &WindowsService{cfgPath: cfgPath})

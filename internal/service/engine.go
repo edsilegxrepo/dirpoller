@@ -473,7 +473,7 @@ func (e *Engine) processFiles(ctx context.Context, files []string) {
 	poller.ClearExpiredExclusions()
 }
 
-func (e *Engine) getFileInfo(path string, errMsg string) FileProcessInfo {
+func (e *Engine) getFileInfo(path, errMsg string) FileProcessInfo {
 	info := FileProcessInfo{
 		Path:  path,
 		Error: errMsg,

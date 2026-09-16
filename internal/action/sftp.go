@@ -20,7 +20,6 @@ package action
 
 import (
 	"context"
-	"criticalsys.net/secretprotector/pkg/libsecsecrets"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -32,6 +31,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"criticalsys.net/secretprotector/pkg/libsecsecrets"
 
 	"criticalsys.net/dirpoller/internal/config"
 

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"criticalsys.net/secretprotector/pkg/libsecsecrets"
 	"fmt"
 	"io"
 	"math/rand"
@@ -15,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"criticalsys.net/secretprotector/pkg/libsecsecrets"
 
 	"criticalsys.net/dirpoller/internal/config"
 )

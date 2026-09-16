@@ -14,11 +14,12 @@ package service
 
 import (
 	"context"
-	"criticalsys.net/secretprotector/pkg/libsecsecrets"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"criticalsys.net/secretprotector/pkg/libsecsecrets"
 
 	"criticalsys.net/dirpoller/internal/config"
 	"criticalsys.net/dirpoller/internal/testutils"
