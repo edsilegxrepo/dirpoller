@@ -1,0 +1,18 @@
+{
+  "name": "dirpoller",
+  "version": "1.0.5",
+  "release": "1",
+  "channel": "xg",
+  "entrypoint": "./cmd/dirpoller",
+  "version_pkg": "main.version",
+  "build_pkg": "",
+  "summary": "Enterprise directory polling and synchronization daemon",
+  "description": "High-performance filesystem event monitoring daemon for automated file ingestion pipelines and archive synchronization.",
+  "maintainer": "Mis Center <support@criticalsys.net>",
+  "license": "MIT",
+  "url": "https://criticalsys.net",
+  "section": "utils",
+  "priority": "optional",
+  "install_path": "/usr/bin",
+  "cgo": false
+}

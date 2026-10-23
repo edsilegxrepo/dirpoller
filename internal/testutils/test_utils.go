@@ -33,6 +33,7 @@ func GetTestBaseDir() string {
 	baseDir := filepath.Join(filepath.Clean(temp), "dirpoller_UTESTS")
 
 	// Ensure the base directory exists
+	// #nosec G703 -- test base directory constructed under temp
 	_ = os.MkdirAll(baseDir, 0o750)
 
 	return baseDir
