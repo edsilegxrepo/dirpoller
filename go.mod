@@ -6,7 +6,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.20.3
-	github.com/pkg/sftp v1.13.11
+	github.com/pkg/sftp v1.13.12
 	github.com/zeebo/xxh3 v1.1.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
