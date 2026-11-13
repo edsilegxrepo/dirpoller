@@ -11,8 +11,13 @@
   "maintainer": "Mis Center <support@criticalsys.net>",
   "license": "MIT",
   "url": "https://criticalsys.net",
-  "section": "utils",
+  "group": "Applications/System",
+  "section": "admin",
   "priority": "optional",
   "install_path": "/usr/bin",
-  "cgo": false
+  "cgo": false,
+  "history": [
+    "* Wed Oct 28 2026 Mis Center <support@criticalsys.net> - <version>-<release>",
+    "- Packaged to new code release"
+  ]
 }
